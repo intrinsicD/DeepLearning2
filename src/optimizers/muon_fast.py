@@ -7,13 +7,25 @@ pure-PyTorch baseline that mirrors the semantics of the high-performance design
 outlined in the MuonFast plan.  It keeps the public API stable so that accelerated
 CUDA/Triton backends can be integrated later without affecting user code.
 
+Compared with the initial reference draft, this version introduces three key
+improvements inspired by production implementations:
+
+* **Routing guardrails** – two-dimensional tensors whose smallest dimension falls
+  below a configurable threshold are automatically routed to the fallback optimizer,
+  mirroring Keras' advice to avoid Muon on very small matrices.
+* **Pre-scaled Newton--Schulz iterations** – the inverse square root is estimated in
+  float32 after scaling the Gram matrix by the mean trace, which accelerates
+  convergence and improves numerical stability.
+* **Adaptive stopping** – the orthogonalization loop exits early once the Newton--
+  Schulz residual drops below a tolerance, saving iterations on well-conditioned
+  updates.
+
 The orthogonalization step uses a small number of Newton--Schulz iterations to
 approximate ``(\Delta^\top \Delta)^{-1/2}`` in float32 for numerical robustness.  The
 resulting orthogonalized update is applied to the parameter in place.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -77,6 +89,8 @@ def _as_param_groups(params: Union[Iterable[Tensor], Iterable[dict]]) -> List[di
 
 def _split_param_groups(
     param_groups: Sequence[dict],
+    min_dim_muon: int,
+    strict_small_matrices: bool,
 ) -> Tuple[List[dict], List[torch.nn.Parameter]]:
     """Split the user-provided parameter groups into Muon and fallback sets."""
     muon_groups: List[dict] = []
@@ -94,7 +108,9 @@ def _split_param_groups(
             if not param.requires_grad:
                 continue
 
-            if param.ndim == 2:
+            if param.ndim == 2 and (
+                strict_small_matrices or min(param.shape) >= min_dim_muon
+            ):
                 muon_params.append(param)
             else:
                 fallback_params.append(param)
@@ -142,6 +158,19 @@ class MuonFast(Optimizer):
     fallback_options:
         Convenience alias for ``fallback.kwargs``.  When both are provided, explicit
         ``fallback_options`` entries override any keys set inside ``fallback``.
+    min_dim_muon:
+        Minimum dimension that a two-dimensional tensor must satisfy (with
+        ``min(m, n) >= min_dim_muon``) in order to be optimized with Muon.  Smaller
+        matrices are routed to the fallback optimizer by default because the fixed
+        Newton--Schulz work and kernel launch overhead typically outweigh the gains of
+        orthogonalization.  Set ``strict_small_matrices=True`` to override this
+        behaviour.
+    strict_small_matrices:
+        When ``True``, all two-dimensional tensors are optimized with Muon regardless
+        of their size.
+    ns_tol:
+        Frobenius-norm tolerance used to terminate the Newton--Schulz iterations
+        early.  A value of ``0.0`` disables the early-stop heuristic.
     """
 
     def __init__(
@@ -157,6 +186,9 @@ class MuonFast(Optimizer):
         graph_capture: bool = False,
         fallback: Optional[_FallbackConfig] = None,
         fallback_options: Optional[dict] = None,
+        min_dim_muon: int = 64,
+        strict_small_matrices: bool = False,
+        ns_tol: float = 1e-4,
     ) -> None:
         if lr <= 0.0:
             raise ValueError("Learning rate must be positive.")
@@ -166,9 +198,17 @@ class MuonFast(Optimizer):
             raise ValueError("ns_iters must be non-negative.")
         if eps <= 0.0:
             raise ValueError("eps must be positive.")
+        if min_dim_muon < 0:
+            raise ValueError("min_dim_muon must be non-negative.")
+        if ns_tol < 0.0:
+            raise ValueError("ns_tol must be non-negative.")
 
         param_groups = _as_param_groups(params)
-        muon_groups, fallback_params = _split_param_groups(param_groups)
+        muon_groups, fallback_params = _split_param_groups(
+            param_groups,
+            min_dim_muon=min_dim_muon,
+            strict_small_matrices=strict_small_matrices,
+        )
 
         if not muon_groups:
             raise ValueError(
@@ -185,6 +225,7 @@ class MuonFast(Optimizer):
             dtype=dtype,
             backend=backend,
             graph_capture=graph_capture,
+            ns_tol=ns_tol,
         )
 
         super().__init__(muon_groups, defaults)
@@ -223,6 +264,7 @@ class MuonFast(Optimizer):
             weight_decay = group["weight_decay"]
             ns_iters = group["ns_iters"]
             eps = group["eps"]
+            ns_tol = group["ns_tol"]
 
             for param in group["params"]:
                 if param.grad is None:
@@ -244,7 +286,12 @@ class MuonFast(Optimizer):
                 if weight_decay != 0.0:
                     param.mul_(1.0 - lr * weight_decay)
 
-                ortho_update = self._orthogonalize(update, ns_iters=ns_iters, eps=eps)
+                ortho_update = self._orthogonalize(
+                    update,
+                    ns_iters=ns_iters,
+                    eps=eps,
+                    tol=ns_tol,
+                )
                 param.add_(ortho_update)
 
         return loss
@@ -255,7 +302,7 @@ class MuonFast(Optimizer):
             self._fallback_opt.zero_grad(set_to_none=set_to_none)
 
     @staticmethod
-    def _orthogonalize(update: Tensor, ns_iters: int, eps: float) -> Tensor:
+    def _orthogonalize(update: Tensor, ns_iters: int, eps: float, tol: float) -> Tensor:
         """Project the update onto the closest orthogonal matrix using Newton--Schulz."""
         if update.ndim != 2:
             return update
@@ -265,6 +312,9 @@ class MuonFast(Optimizer):
         mat = update.to(dtype)
 
         m, n = mat.shape
+
+        if mat.abs().max().item() == 0.0:
+            return update
 
         # Use the smaller dimension for the Gram matrix to minimize computation
         # For m x n matrix:
@@ -281,23 +331,34 @@ class MuonFast(Optimizer):
             size = n
             left_multiply = False
 
-        gram = gram + eps * torch.eye(size, device=device, dtype=dtype)
+        identity = torch.eye(size, device=device, dtype=dtype)
+        gram = gram + eps * identity
 
-        # Handle the zero-update corner case explicitly to avoid NaNs in normalization.
-        frob_norm = torch.linalg.norm(gram)
-        if torch.isclose(frob_norm, torch.tensor(0.0, device=gram.device, dtype=frob_norm.dtype)):
+        trace = torch.trace(gram)
+        if trace.item() <= 0.0:
             return update
 
-        identity = torch.eye(size, device=device, dtype=dtype)
-        y = gram / frob_norm
+        scale = torch.rsqrt(trace / float(size))
+        if not torch.isfinite(scale).item():
+            return update
+
+        scaled_gram = gram * (scale * scale)
+        y = scaled_gram
         z = identity.clone()
+        zy = z @ y
 
         for _ in range(ns_iters):
-            t = 0.5 * (3.0 * identity - z @ y)
+            if tol > 0.0:
+                residual = torch.linalg.norm(identity - zy, ord="fro")
+                if residual <= tol:
+                    break
+
+            t = 0.5 * (3.0 * identity - zy)
             y = y @ t
             z = t @ z
+            zy = z @ y
 
-        inv_sqrt = z / math.sqrt(frob_norm)
+        inv_sqrt = z * scale
 
         if left_multiply:
             orthogonal_update = (inv_sqrt @ mat).to(update.dtype)
