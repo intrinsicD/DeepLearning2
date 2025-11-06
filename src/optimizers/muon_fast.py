@@ -304,7 +304,7 @@ class MuonFast(Optimizer):
         Keras guidance. If None, only shape-based heuristics are used.
     matmul_precision:
         Precision hint forwarded to :func:`torch.set_float32_matmul_precision`.
-        ``"high"`` (default) matches NVIDIA's guidance for Muon; ``"medium`` or
+        ``"high"`` (default) matches NVIDIA's guidance for Muon; ``"medium"`` or
         ``"default"`` can be selected to trade accuracy for speed. Pass ``None`` to
         skip setting the global flag.
     """
