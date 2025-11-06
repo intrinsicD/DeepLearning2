@@ -34,6 +34,23 @@ from torch import Tensor
 from torch.optim import AdamW, Optimizer
 
 
+# Polynomial coefficient tables for Newton--Schulz transforms.
+# Each entry maps an identifier to a list of per-iteration coefficient lists.
+# A coefficient list ``[c0, c1, ...]`` represents ``c0 * I + c1 * (ZY) + c2 * (ZY)^2 + ...``.
+_NS_POLYNOMIALS = {
+    "simple": [[1.5, -0.5]],
+    "quintic": [[15.0 / 8.0, -10.0 / 8.0, 3.0 / 8.0]],
+    # Polar-Express schedule: progressively higher-order minimax polynomials.
+    # Coefficients follow the odd-polynomial sequence detailed in recent
+    # Newton--Schulz acceleration work (cubic → quintic → nonic).
+    "polar_express": [
+        [1.5, -0.5],
+        [15.0 / 8.0, -10.0 / 8.0, 3.0 / 8.0],
+        [315.0 / 128.0, -420.0 / 128.0, 378.0 / 128.0, -180.0 / 128.0, 35.0 / 128.0],
+    ],
+}
+
+
 @dataclass
 class _FallbackConfig:
     """Configuration for the fallback optimizer.
@@ -263,11 +280,19 @@ class MuonFast(Optimizer):
         Example: ``lambda name, p: 'fc2' in name or 'embed' in name``
     scale_mode:
         Update scaling mode: ``"spectral"`` (default, NeMo-style), ``"shape"``,
-        or ``None``. Applies per-parameter scaling to orthogonalized updates to
-        match AdamW's RMS norm characteristics and improve LR transferability.
+        ``"rms_to_rms"``, or ``None``. Applies per-parameter scaling to
+        orthogonalized updates to match AdamW's RMS norm characteristics and
+        improve LR transferability. ``"rms_to_rms"`` keeps the per-parameter
+        RMS aligned with a target magnitude.
     scale_extra:
         Additional multiplicative scale factor applied to updates (default 1.0).
-        Can be tuned to match specific model characteristics.
+        Can be tuned to match specific model characteristics, or combined with
+        ``rms_to_rms`` to stretch/shrink the RMS after matching the target.
+    scale_rms_target:
+        Optional RMS target used when ``scale_mode="rms_to_rms"``. When ``None``
+        the unscaled update RMS is preserved, so setting ``scale_extra`` alone
+        has no effect. Provide an explicit value (e.g., ``1e-3``) to normalize
+        per-parameter RMS magnitudes across widths.
     ns_coefficients:
         Newton-Schulz coefficient type: ``"simple"`` (default 3I-ZY transform),
         ``"quintic"`` (faster-converging cubic variant), or ``"polar_express"``
@@ -277,6 +302,11 @@ class MuonFast(Optimizer):
         Optional model reference for reliable parameter name extraction. When provided,
         enables name-based exclusion (e.g., 'classifier', 'lm_head', 'embed') per
         Keras guidance. If None, only shape-based heuristics are used.
+    matmul_precision:
+        Precision hint forwarded to :func:`torch.set_float32_matmul_precision`.
+        ``"high"`` (default) matches NVIDIA's guidance for Muon; ``"medium`` or
+        ``"default"`` can be selected to trade accuracy for speed. Pass ``None`` to
+        skip setting the global flag.
     """
 
     def __init__(
@@ -302,8 +332,10 @@ class MuonFast(Optimizer):
         exclude_fn: Optional[callable] = None,
         scale_mode: str = "spectral",
         scale_extra: float = 1.0,
+        scale_rms_target: Optional[float] = None,
         ns_coefficients: str = "simple",
         model: Optional[torch.nn.Module] = None,
+        matmul_precision: Optional[str] = "high",
     ) -> None:
         if lr <= 0.0:
             raise ValueError("Learning rate must be positive.")
@@ -317,10 +349,12 @@ class MuonFast(Optimizer):
             raise ValueError("min_dim_muon must be non-negative.")
         if ns_tol < 0.0:
             raise ValueError("ns_tol must be non-negative.")
-        if scale_mode not in ["spectral", "shape", None]:
-            raise ValueError("scale_mode must be 'spectral', 'shape', or None")
+        if scale_mode not in ["spectral", "shape", "rms_to_rms", None]:
+            raise ValueError("scale_mode must be 'spectral', 'shape', 'rms_to_rms', or None")
         if ns_coefficients not in ["simple", "quintic", "polar_express"]:
             raise ValueError("ns_coefficients must be 'simple', 'quintic', or 'polar_express'")
+        if matmul_precision not in {"high", "medium", "default", None}:
+            raise ValueError("matmul_precision must be 'high', 'medium', 'default', or None")
 
         # Convert params to param groups and attach names if model provided
         param_groups = _as_param_groups(params)
@@ -355,6 +389,7 @@ class MuonFast(Optimizer):
             ns_tol=ns_tol,
             scale_mode=scale_mode,
             scale_extra=scale_extra,
+            scale_rms_target=scale_rms_target,
             ns_coefficients=ns_coefficients,
         )
 
@@ -362,9 +397,9 @@ class MuonFast(Optimizer):
 
         # Set matmul precision for FP32 accumulation in NS iterations
         # This ensures Gram matrix and NS multiplications don't silently downgrade
-        if backend == "cuda":
+        if backend == "cuda" and matmul_precision is not None:
             try:
-                torch.set_float32_matmul_precision("high")  # FP32 accumulation
+                torch.set_float32_matmul_precision(matmul_precision)
             except:
                 pass  # Older PyTorch versions may not support this
 
@@ -420,6 +455,7 @@ class MuonFast(Optimizer):
             ns_tol = group["ns_tol"]
             scale_mode = group["scale_mode"]
             scale_extra = group["scale_extra"]
+            scale_rms_target = group["scale_rms_target"]
             ns_coefficients = group["ns_coefficients"]
 
             for param in group["params"]:
@@ -470,7 +506,14 @@ class MuonFast(Optimizer):
                 # Apply per-parameter update scaling (NeMo-style)
                 if scale_mode is not None:
                     m, n = param.shape
-                    scale = self._compute_update_scale(m, n, scale_mode, scale_extra)
+                    scale = self._compute_update_scale(
+                        m,
+                        n,
+                        scale_mode,
+                        scale_extra,
+                        update=ortho_update,
+                        target_rms=scale_rms_target,
+                    )
                     ortho_update = ortho_update * scale
 
                 # Cast to param dtype only once at the end
@@ -522,28 +565,42 @@ class MuonFast(Optimizer):
         print("=" * 70)
 
     @staticmethod
-    def _compute_update_scale(m: int, n: int, mode: str, extra: float) -> float:
+    def _compute_update_scale(
+        m: int,
+        n: int,
+        mode: str,
+        extra: float,
+        update: Optional[Tensor] = None,
+        target_rms: Optional[float] = None,
+    ) -> float:
         """Compute per-parameter update scaling factor (NeMo-style).
 
         Args:
-            m, n: Matrix dimensions
-            mode: 'spectral' (sqrt of max dim) or 'shape' (sqrt of aspect ratio)
-            extra: Additional multiplicative factor
+            m, n: Matrix dimensions.
+            mode: Scaling mode ('spectral', 'shape', or 'rms_to_rms').
+            extra: Additional multiplicative factor.
+            update: Orthogonalized update tensor (required for ``rms_to_rms``).
+            target_rms: Desired RMS magnitude for ``rms_to_rms`` scaling.
 
-        Returns:
-            Scale factor to apply to orthogonalized update
-
-        Per NeMo: Spectral scaling uses sqrt(max(m,n)) to match AdamW update magnitudes
-        and improve LR transferability across different matrix sizes.
+        Returns
+        -------
+        float
+            Scale factor to apply to the orthogonalized update.
         """
+
         if mode == "shape":
-            # Shape scaling: sqrt(max(1, m/n))
             return extra * (max(1.0, m / n) ** 0.5)
-        elif mode == "spectral":
-            # Spectral scaling (NeMo default): sqrt(max(m, n))
+        if mode == "spectral":
             return extra * (max(m, n) ** 0.5)
-        else:
-            return extra
+        if mode == "rms_to_rms":
+            if update is None:
+                return extra
+            rms = update.pow(2).mean().sqrt().item()
+            if rms == 0.0:
+                return 0.0
+            target = target_rms if target_rms is not None else rms
+            return extra * (target / rms)
+        return extra
 
     @staticmethod
     def _orthogonalize(update: Tensor, ns_iters: int, eps: float, tol: float, state: dict, ns_coefficients: str = "simple") -> Tensor:
@@ -581,26 +638,36 @@ class MuonFast(Optimizer):
             size = n
             left_multiply = False
 
-        # EXACT PATH for small matrices (≤64): eigendecomposition is cheaper and exact
-        # Avoids NS iteration overhead on tiny matrices
+        # EXACT PATH for small matrices (≤64): Cholesky/eig provide exact inverse sqrt
         if size <= 64:
+            identity_small = torch.eye(size, device=device, dtype=dtype)
+            gram_reg = gram + eps * identity_small
             try:
-                # Compute eigendecomposition: Gram = Q Λ Q^T
-                identity_small = torch.eye(size, device=device, dtype=dtype)
-                eigenvalues, eigenvectors = torch.linalg.eigh(gram + eps * identity_small)
+                chol, info = torch.linalg.cholesky_ex(gram_reg, upper=False)
+                if int(info.item()) == 0:
+                    inv_lower = torch.linalg.solve_triangular(
+                        chol,
+                        identity_small,
+                        upper=False,
+                        left=True,
+                    )
+                    inv_sqrt = inv_lower.transpose(0, 1) @ inv_lower
+                    if left_multiply:
+                        return inv_sqrt @ mat
+                    return mat @ inv_sqrt
+            except RuntimeError:
+                pass
 
-                # Compute Gram^{-1/2} = Q Λ^{-1/2} Q^T
+            try:
+                eigenvalues, eigenvectors = torch.linalg.eigh(gram_reg)
                 eigenvalues = torch.clamp(eigenvalues, min=eps)
                 inv_sqrt_eigenvalues = 1.0 / torch.sqrt(eigenvalues)
-                inv_sqrt = eigenvectors @ torch.diag(inv_sqrt_eigenvalues) @ eigenvectors.T
-
-                # Apply to get orthogonalized update
+                inv_sqrt = eigenvectors * inv_sqrt_eigenvalues.unsqueeze(0)
+                inv_sqrt = inv_sqrt @ eigenvectors.transpose(0, 1)
                 if left_multiply:
-                    return (inv_sqrt @ mat)
-                else:
-                    return (mat @ inv_sqrt)
-            except:
-                # Fall through to NS if eigendecomposition fails
+                    return inv_sqrt @ mat
+                return mat @ inv_sqrt
+            except RuntimeError:
                 pass
 
         # Standard NS path for larger matrices
@@ -613,68 +680,71 @@ class MuonFast(Optimizer):
         if ns_cache is None:
             ns_cache = state["ns_cache"] = {}
 
-        identity = ns_cache.get(size)
+        cache_key = (device, dtype, size)
+        identity = ns_cache.get(cache_key)
         if identity is None:
             identity = torch.eye(size, device=device, dtype=dtype)
-            ns_cache[size] = identity
+            ns_cache[cache_key] = identity
+
+        coeff_schedule = _NS_POLYNOMIALS[ns_coefficients]
+
+        def _ns_transform(current_zy: Tensor, iteration: int) -> Tensor:
+            coeffs = coeff_schedule[min(iteration, len(coeff_schedule) - 1)]
+            result = coeffs[0] * identity
+            if len(coeffs) == 1:
+                return result
+            power = current_zy
+            last_idx = len(coeffs) - 1
+            for idx, coeff in enumerate(coeffs[1:], start=1):
+                result = result + coeff * power
+                if idx < last_idx:
+                    power = power @ current_zy
+            return result
 
         gram = gram + eps * identity
-
-        trace = torch.trace(gram)
-        if trace.item() <= 0.0:
-            return update
-
-        scale = torch.rsqrt(trace / float(size))
-        if not torch.isfinite(scale).item():
-            return update
-
-        scaled_gram = gram * (scale * scale)
-        y = scaled_gram
-        z = identity.clone()
-        zy = z @ y
-
-        # Track if residual plateaus for adaptive epsilon/steps
-        prev_residual = float('inf')
         eps_bumped = False
 
-        # Newton-Schulz iterations with adaptive coefficients
-        for it in range(adaptive_ns_iters):
-            # Select coefficient transformation based on mode
-            if ns_coefficients == "quintic":
-                # Quintic coefficients: higher-order Newton-Schulz for faster convergence
-                # Cubically convergent: T = (1/8)*(15I - 10*ZY + 3*(ZY)^2)
-                zy_sq = zy @ zy
-                t = (1.0 / 8.0) * (15.0 * identity - 10.0 * zy + 3.0 * zy_sq)
-            elif ns_coefficients == "polar_express":
-                # Polar-Express: optimized for polar decomposition (CANS paper)
-                # Uses optimized polynomial coefficients for better singular value handling
-                # Formula: T = (1/2)*(3I - ZY + c*(ZY)^2) with optimized c
-                zy_sq = zy @ zy
-                c_opt = 0.25  # Optimized coefficient from polar decomposition literature
-                t = 0.5 * (3.0 * identity - zy + c_opt * zy_sq)
-            else:
-                # Simple coefficients (standard 3I - ZY)
-                t = 0.5 * (3.0 * identity - zy)
+        while True:
+            trace = torch.trace(gram)
+            if trace.item() <= 0.0:
+                return update
 
-            y = y @ t
-            z = t @ z
+            scale = torch.rsqrt(trace / float(size))
+            if not torch.isfinite(scale).item():
+                return update
+
+            scaled_gram = gram * (scale * scale)
+            y = scaled_gram
+            z = identity.clone()
             zy = z @ y
 
-            # Size-normalized residual check with adaptive epsilon logic
-            if it > 0 and tol > 0.0 and (it % 2 == 1):
-                residual = torch.linalg.norm(identity - zy, ord="fro") / (size ** 0.5)
+            prev_residual = float("inf")
+            restart = False
 
-                # Adaptive epsilon: if residual plateaus, bump eps once
-                if not eps_bumped and it > 2:
-                    if abs(residual - prev_residual) < tol * 0.1:  # Stagnation detected
-                        # Retry with increased regularization
-                        gram = gram + 3.0 * eps * identity  # Bump eps by 4x total
-                        eps_bumped = True
+            for it in range(adaptive_ns_iters):
+                transform = _ns_transform(zy, it)
+                y = y @ transform
+                z = transform @ z
+                zy = z @ y
 
-                prev_residual = residual
+                if it > 0 and tol > 0.0 and (it % 2 == 1):
+                    residual = torch.linalg.norm(identity - zy, ord="fro") / (size ** 0.5)
 
-                if residual <= tol:
-                    break
+                    if not eps_bumped and it > 2:
+                        if abs(residual - prev_residual) < tol * 0.1:
+                            gram = gram + 3.0 * eps * identity
+                            eps_bumped = True
+                            restart = True
+                            break
+
+                    prev_residual = residual
+
+                    if residual <= tol:
+                        break
+
+            if restart:
+                continue
+            break
 
         inv_sqrt = z * scale
 
