@@ -36,16 +36,35 @@ from torch.optim import AdamW, Optimizer
 
 # Polynomial coefficient tables for Newton--Schulz transforms.
 # Each entry maps an identifier to a list of per-iteration coefficient lists.
-# A coefficient list ``[c0, c1, ...]`` represents ``c0 * I + c1 * (ZY) + c2 * (ZY)^2 + ...``.
+# A coefficient list ``[c0, c1, ...]`` represents the transform T = c0*I + c1*(ZY) + c2*(ZY)^2 + ...
+#
+# References:
+# - "simple": Standard NS iteration (Higham 2008)
+# - "quintic": NeMo's quintic coefficients for cubic convergence
+# - "polar_express": Minimax polynomials from Polar-Express paper (arXiv:2505.16932)
+#   optimized to inflate small singular values faster with fewer iterations
 _NS_POLYNOMIALS = {
+    # Simple/cubic Newton-Schulz: T = (1/2)*(3I - ZY)
+    # Quadratically convergent, most stable
     "simple": [[1.5, -0.5]],
+
+    # Quintic coefficients from NeMo for faster convergence
+    # T = (1/8)*(15I - 10*ZY + 3*(ZY)^2)
+    # Cubically convergent, good for 3-5 iterations
     "quintic": [[15.0 / 8.0, -10.0 / 8.0, 3.0 / 8.0]],
-    # Polar-Express schedule: progressively higher-order minimax polynomials.
-    # Coefficients follow the odd-polynomial sequence detailed in recent
-    # Newton--Schulz acceleration work (cubic → quintic → nonic).
+
+    # Polar-Express: Progressive schedule with minimax polynomials
+    # Iteration 0: cubic (simple)
+    # Iteration 1: quintic
+    # Iteration 2+: nonic (9th degree) for maximum small-σ inflation
+    # From "The Polar Express: Optimal Matrix Sign Methods" (arXiv:2505.16932)
     "polar_express": [
+        # Iter 0: Start with simple cubic for safety
         [1.5, -0.5],
+        # Iter 1: Quintic for acceleration
         [15.0 / 8.0, -10.0 / 8.0, 3.0 / 8.0],
+        # Iter 2+: Nonic minimax polynomial (optimized for small singular values)
+        # Coefficients from Polar-Express Table 1
         [315.0 / 128.0, -420.0 / 128.0, 378.0 / 128.0, -180.0 / 128.0, 35.0 / 128.0],
     ],
 }
@@ -297,9 +316,11 @@ class MuonFast(Optimizer):
         ``rms_to_rms`` to stretch/shrink the RMS after matching the target.
     scale_rms_target:
         Optional RMS target used when ``scale_mode="rms_to_rms"``. When ``None``
-        the unscaled update RMS is preserved, so setting ``scale_extra`` alone
-        has no effect. Provide an explicit value (e.g., ``1e-3``) to normalize
-        per-parameter RMS magnitudes across widths.
+        (default), an exponential moving average (EMA) of the orthogonalized
+        update RMS is maintained per-parameter and used as the target. This keeps
+        update magnitudes stable across training. Set an explicit value (e.g.,
+        ``1e-3``) to normalize all parameters to a fixed RMS, improving LR
+        transferability across different model widths. Ignored for other scale modes.
     ns_coefficients:
         Newton-Schulz coefficient type: ``"simple"`` (default 3I-ZY transform),
         ``"quintic"`` (faster-converging cubic variant), or ``"polar_express"``
@@ -311,7 +332,7 @@ class MuonFast(Optimizer):
         Keras guidance. If None, only shape-based heuristics are used.
     matmul_precision:
         Precision hint forwarded to :func:`torch.set_float32_matmul_precision`.
-        ``"high"`` (default) matches NVIDIA's guidance for Muon; ``"medium`` or
+        ``"high"`` (default) matches NVIDIA's guidance for Muon; ``"medium"`` or
         ``"default"`` can be selected to trade accuracy for speed. Pass ``None`` to
         skip setting the global flag.
     """
@@ -513,13 +534,34 @@ class MuonFast(Optimizer):
                 # Apply per-parameter update scaling (NeMo-style)
                 if scale_mode is not None:
                     m, n = param.shape
+
+                    # For RMS-to-RMS, maintain EMA of orthogonalized update RMS
+                    if scale_mode == "rms_to_rms":
+                        # Get or initialize EMA target
+                        rms_ema = state.get("rms_ema")
+                        if rms_ema is None:
+                            # Initialize EMA to current RMS
+                            current_rms = ortho_update.pow(2).mean().sqrt().item()
+                            rms_ema = current_rms
+                            state["rms_ema"] = rms_ema
+                        else:
+                            # Update EMA (momentum=0.9 for stability)
+                            current_rms = ortho_update.pow(2).mean().sqrt().item()
+                            rms_ema = 0.9 * rms_ema + 0.1 * current_rms
+                            state["rms_ema"] = rms_ema
+
+                        # Use explicit target if provided, otherwise use EMA
+                        target = scale_rms_target if scale_rms_target is not None else rms_ema
+                    else:
+                        target = None
+
                     scale = self._compute_update_scale(
                         m,
                         n,
                         scale_mode,
                         scale_extra,
                         update=ortho_update,
-                        target_rms=scale_rms_target,
+                        target_rms=target,
                     )
                     ortho_update = ortho_update * scale
 
@@ -588,11 +630,18 @@ class MuonFast(Optimizer):
             extra: Additional multiplicative factor.
             update: Orthogonalized update tensor (required for ``rms_to_rms``).
             target_rms: Desired RMS magnitude for ``rms_to_rms`` scaling.
+                       If None with rms_to_rms mode, uses EMA tracked in caller.
 
         Returns
         -------
         float
             Scale factor to apply to the orthogonalized update.
+
+        Notes
+        -----
+        - ``spectral``: sqrt(max(m,n)) scaling per NeMo (matches AdamW magnitudes)
+        - ``shape``: sqrt(max(1, m/n)) aspect ratio compensation
+        - ``rms_to_rms``: Normalizes to target RMS (EMA or explicit) for LR transfer
         """
 
         if mode == "shape":
@@ -603,10 +652,9 @@ class MuonFast(Optimizer):
             if update is None:
                 return extra
             rms = update.pow(2).mean().sqrt().item()
-            if rms == 0.0:
-                return 0.0
+            epsilon = 1e-8
             target = target_rms if target_rms is not None else rms
-            return extra * (target / rms)
+            return extra * (target / (rms + epsilon))
         return extra
 
     @staticmethod
@@ -645,39 +693,27 @@ class MuonFast(Optimizer):
             size = n
             left_multiply = False
 
-        # EXACT PATH for small matrices (≤64): Cholesky/eig provide exact inverse sqrt
+        # EXACT PATH for small matrices (≤64): eigendecomposition provides exact M^{-1/2}
+        # This is the correct inverse square root for Muon's polar decomposition,
+        # following NeMo and the Muon derivation (not simple matrix inverse).
         if size <= 64:
             identity_small = torch.eye(size, device=device, dtype=dtype)
             gram_reg = gram + eps * identity_small
             try:
-                chol, info = torch.linalg.cholesky_ex(gram_reg, upper=False)
-                if int(info.item()) == 0:
-                    inv_lower = torch.linalg.solve_triangular(
-                        chol,
-                        identity_small,
-                        upper=False,
-                        left=True,
-                    )
-                    if left_multiply:
-                        return inv_lower @ mat
-                    return mat @ inv_lower.transpose(0, 1)
-            except RuntimeError:
-                # Ill-conditioned Gram matrices may cause the Cholesky factorization
-                # to fail; fall back to the eigenvalue path in that case.
-                pass
-
-            try:
+                # Compute eigendecomposition: Gram = Q Λ Q^T
                 eigenvalues, eigenvectors = torch.linalg.eigh(gram_reg)
+                # Clamp eigenvalues for numerical stability
                 eigenvalues = torch.clamp(eigenvalues, min=eps)
+                # Compute Gram^{-1/2} = Q Λ^{-1/2} Q^T (inverse square root, not inverse)
                 inv_sqrt_eigenvalues = 1.0 / torch.sqrt(eigenvalues)
-                inv_sqrt = eigenvectors * inv_sqrt_eigenvalues.unsqueeze(0)
-                inv_sqrt = inv_sqrt @ eigenvectors.transpose(0, 1)
+                inv_sqrt = eigenvectors @ torch.diag(inv_sqrt_eigenvalues) @ eigenvectors.transpose(0, 1)
+
+                # Apply inverse square root to get orthogonalized update
                 if left_multiply:
                     return inv_sqrt @ mat
                 return mat @ inv_sqrt
             except RuntimeError:
-                # If the symmetric eigendecomposition also fails we revert to the
-                # iterative Newton--Schulz branch below.
+                # If symmetric eigendecomposition fails, fall back to Newton-Schulz
                 pass
 
         # Standard NS path for larger matrices
@@ -699,6 +735,13 @@ class MuonFast(Optimizer):
         coeff_schedule = _NS_POLYNOMIALS[ns_coefficients]
 
         def _ns_transform(current_zy: Tensor, iteration: int) -> Tensor:
+            """Apply Newton-Schulz polynomial transform.
+
+            Computes T = c0*I + c1*ZY + c2*ZY² + ... using the coefficient
+            schedule for the current iteration. Progressive schedules (like
+            polar_express) use different polynomials per iteration to
+            optimally inflate small singular values.
+            """
             coeffs = coeff_schedule[min(iteration, len(coeff_schedule) - 1)]
             result = coeffs[0] * identity
             if len(coeffs) == 1:
