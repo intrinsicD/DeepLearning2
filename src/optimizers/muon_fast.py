@@ -596,10 +596,9 @@ class MuonFast(Optimizer):
             if update is None:
                 return extra
             rms = update.pow(2).mean().sqrt().item()
-            if rms == 0.0:
-                return 0.0
+            epsilon = 1e-8
             target = target_rms if target_rms is not None else rms
-            return extra * (target / rms)
+            return extra * (target / (rms + epsilon))
         return extra
 
     @staticmethod
