@@ -235,7 +235,7 @@ class MuonFast(Optimizer):
                 state = self.state[param]
                 buf = state.get("momentum_buffer")
                 if buf is None:
-                    buf = torch.zeros_like(param, dtype=grad.dtype)
+                    buf = torch.zeros_like(param, dtype=param.dtype)
                     state["momentum_buffer"] = buf
 
                 buf.mul_(momentum).add_(grad)
