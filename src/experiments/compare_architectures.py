@@ -2,10 +2,19 @@
 Example experiment: Compare different architectures on MNIST.
 """
 
+from pathlib import Path
+
 import torch.nn as nn
 from src.architectures import SimpleCNN, ResNet, FullyConnectedNet
 from src.optimizers import CustomAdam
-from src.utils import get_device, print_gpu_info, Trainer, get_mnist_loaders
+from src.utils import (
+    Trainer,
+    get_device,
+    get_mnist_loaders,
+    plot_bar_chart,
+    plot_metric_curves,
+    print_gpu_info,
+)
 
 
 def compare_architectures(epochs=3):
@@ -80,6 +89,33 @@ def compare_architectures(epochs=3):
     
     print("=" * 60)
     
+    # Generate visual summaries
+    output_dir = Path("figures") / "architecture_comparison"
+    histories = {name: result['history'] for name, result in results.items()}
+
+    plot_metric_curves(
+        histories,
+        metric='val_acc',
+        title='Validation Accuracy by Architecture',
+        ylabel='Accuracy (%)',
+        save_path=output_dir / 'validation_accuracy.png',
+    )
+
+    plot_metric_curves(
+        histories,
+        metric='val_loss',
+        title='Validation Loss by Architecture',
+        ylabel='Loss',
+        save_path=output_dir / 'validation_loss.png',
+    )
+
+    plot_bar_chart(
+        {name: result['test_acc'] for name, result in results.items()},
+        title='Test Accuracy by Architecture',
+        ylabel='Accuracy (%)',
+        save_path=output_dir / 'test_accuracy.png',
+    )
+
     return results
 
 

@@ -2,11 +2,20 @@
 Example experiment: Compare different optimizers on MNIST.
 """
 
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 from src.architectures import SimpleCNN
-from src.optimizers import CustomSGD, CustomAdam
-from src.utils import get_device, print_gpu_info, Trainer, get_mnist_loaders
+from src.optimizers import CustomAdam, CustomSGD, MuonFast
+from src.utils import (
+    Trainer,
+    get_device,
+    get_mnist_loaders,
+    plot_bar_chart,
+    plot_metric_curves,
+    print_gpu_info,
+)
 
 
 def compare_optimizers(epochs=5):
@@ -31,12 +40,13 @@ def compare_optimizers(epochs=5):
             'Adam': torch.optim.Adam(model.parameters(), lr=0.001),
             'CustomSGD': CustomSGD(model.parameters(), lr=0.01, momentum=0.9),
             'CustomAdam': CustomAdam(model.parameters(), lr=0.001),
+            'MuonFast': MuonFast(model.parameters(), lr=0.001, momentum=0.95),
         }
-    
+
     results = {}
-    
+
     # Train and evaluate with each optimizer
-    for name in ['SGD', 'Adam', 'CustomSGD', 'CustomAdam']:
+    for name in ['SGD', 'Adam', 'CustomSGD', 'CustomAdam', 'MuonFast']:
         print("\n" + "=" * 60)
         print(f"Training with {name} optimizer")
         print("=" * 60)
@@ -85,6 +95,33 @@ def compare_optimizers(epochs=5):
     
     print("=" * 60)
     
+    # Generate visual summaries
+    output_dir = Path("figures") / "optimizer_comparison"
+    histories = {name: result['history'] for name, result in results.items()}
+
+    plot_metric_curves(
+        histories,
+        metric='val_acc',
+        title='Validation Accuracy by Optimizer',
+        ylabel='Accuracy (%)',
+        save_path=output_dir / 'validation_accuracy.png',
+    )
+
+    plot_metric_curves(
+        histories,
+        metric='val_loss',
+        title='Validation Loss by Optimizer',
+        ylabel='Loss',
+        save_path=output_dir / 'validation_loss.png',
+    )
+
+    plot_bar_chart(
+        {name: result['test_acc'] for name, result in results.items()},
+        title='Test Accuracy by Optimizer',
+        ylabel='Accuracy (%)',
+        save_path=output_dir / 'test_accuracy.png',
+    )
+
     return results
 
 
