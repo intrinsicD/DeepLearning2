@@ -660,8 +660,7 @@ class MuonFast(Optimizer):
                 eigenvalues, eigenvectors = torch.linalg.eigh(gram_reg)
                 eigenvalues = torch.clamp(eigenvalues, min=eps)
                 inv_sqrt_eigenvalues = 1.0 / torch.sqrt(eigenvalues)
-                inv_sqrt = eigenvectors * inv_sqrt_eigenvalues.unsqueeze(0)
-                inv_sqrt = inv_sqrt @ eigenvectors.transpose(0, 1)
+                inv_sqrt = eigenvectors @ torch.diag(inv_sqrt_eigenvalues) @ eigenvectors.transpose(0, 1)
                 if left_multiply:
                     return inv_sqrt @ mat
                 return mat @ inv_sqrt
