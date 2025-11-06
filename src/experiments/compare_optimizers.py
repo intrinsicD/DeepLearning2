@@ -1,8 +1,9 @@
-"""
-Example experiment: Compare different optimizers on MNIST.
-"""
+"""Example experiment: Compare different optimizers on MNIST."""
+
+from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Dict, Tuple
 
 import torch
 import torch.nn as nn
@@ -18,12 +19,27 @@ from src.utils import (
 )
 
 
-def compare_optimizers(epochs=5):
-    """
-    Compare different optimizers on the same architecture.
-    
+def compare_optimizers(
+    epochs: int = 5,
+    output_dir: Path | None = None,
+    return_figures: bool = False,
+) -> Dict[str, Dict[str, Any]] | Tuple[
+    Dict[str, Dict[str, Any]], Dict[str, Path]
+]:
+    """Compare different optimizers on the same architecture.
+
     Args:
-        epochs (int): Number of training epochs for each optimizer
+        epochs: Number of training epochs for each optimizer.
+        output_dir: Optional directory where generated visualizations are saved.
+            When ``None`` (default), figures are stored in
+            ``figures/optimizer_comparison``.
+        return_figures: When ``True``, return the file paths for the generated
+            figures alongside the evaluation metrics.
+
+    Returns:
+        Mapping with evaluation metrics for each optimizer. When
+        ``return_figures`` is ``True``, a tuple ``(results, figure_paths)`` is
+        returned instead.
     """
     # Get device
     device = get_device()
@@ -96,31 +112,37 @@ def compare_optimizers(epochs=5):
     print("=" * 60)
     
     # Generate visual summaries
-    output_dir = Path("figures") / "optimizer_comparison"
+    if output_dir is None:
+        output_dir = Path("figures") / "optimizer_comparison"
+    else:
+        output_dir = Path(output_dir)
     histories = {name: result['history'] for name, result in results.items()}
 
-    plot_metric_curves(
-        histories,
-        metric='val_acc',
-        title='Validation Accuracy by Optimizer',
-        ylabel='Accuracy (%)',
-        save_path=output_dir / 'validation_accuracy.png',
-    )
+    figure_paths = {
+        'validation_accuracy': plot_metric_curves(
+            histories,
+            metric='val_acc',
+            title='Validation Accuracy by Optimizer',
+            ylabel='Accuracy (%)',
+            save_path=output_dir / 'validation_accuracy.png',
+        ),
+        'validation_loss': plot_metric_curves(
+            histories,
+            metric='val_loss',
+            title='Validation Loss by Optimizer',
+            ylabel='Loss',
+            save_path=output_dir / 'validation_loss.png',
+        ),
+        'test_accuracy': plot_bar_chart(
+            {name: result['test_acc'] for name, result in results.items()},
+            title='Test Accuracy by Optimizer',
+            ylabel='Accuracy (%)',
+            save_path=output_dir / 'test_accuracy.png',
+        ),
+    }
 
-    plot_metric_curves(
-        histories,
-        metric='val_loss',
-        title='Validation Loss by Optimizer',
-        ylabel='Loss',
-        save_path=output_dir / 'validation_loss.png',
-    )
-
-    plot_bar_chart(
-        {name: result['test_acc'] for name, result in results.items()},
-        title='Test Accuracy by Optimizer',
-        ylabel='Accuracy (%)',
-        save_path=output_dir / 'test_accuracy.png',
-    )
+    if return_figures:
+        return results, figure_paths
 
     return results
 
