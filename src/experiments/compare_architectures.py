@@ -1,8 +1,9 @@
-"""
-Example experiment: Compare different architectures on MNIST.
-"""
+"""Example experiment: Compare different architectures on MNIST."""
+
+from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Dict, Tuple
 
 import torch.nn as nn
 from src.architectures import SimpleCNN, ResNet, FullyConnectedNet
@@ -17,12 +18,26 @@ from src.utils import (
 )
 
 
-def compare_architectures(epochs=3):
-    """
-    Compare different neural network architectures on MNIST.
-    
+def compare_architectures(
+    epochs: int = 3,
+    output_dir: Path | None = None,
+    return_figures: bool = False,
+) -> Dict[str, Dict[str, Any]] | Tuple[
+    Dict[str, Dict[str, Any]], Dict[str, Path]
+]:
+    """Compare different neural network architectures on MNIST.
+
     Args:
-        epochs (int): Number of training epochs for each architecture
+        epochs: Number of training epochs for each architecture.
+        output_dir: Optional directory in which to save visual summaries. When
+            ``None`` (default), figures are stored in ``figures/architecture_comparison``.
+        return_figures: When ``True``, also return a mapping of the generated
+            figure names to their saved paths.
+
+    Returns:
+        Mapping containing evaluation metrics keyed by architecture. When
+        ``return_figures`` is ``True``, a tuple ``(results, figure_paths)`` is
+        returned instead.
     """
     # Get device
     device = get_device()
@@ -90,31 +105,37 @@ def compare_architectures(epochs=3):
     print("=" * 60)
     
     # Generate visual summaries
-    output_dir = Path("figures") / "architecture_comparison"
+    if output_dir is None:
+        output_dir = Path("figures") / "architecture_comparison"
+    else:
+        output_dir = Path(output_dir)
     histories = {name: result['history'] for name, result in results.items()}
 
-    plot_metric_curves(
-        histories,
-        metric='val_acc',
-        title='Validation Accuracy by Architecture',
-        ylabel='Accuracy (%)',
-        save_path=output_dir / 'validation_accuracy.png',
-    )
+    figure_paths = {
+        'validation_accuracy': plot_metric_curves(
+            histories,
+            metric='val_acc',
+            title='Validation Accuracy by Architecture',
+            ylabel='Accuracy (%)',
+            save_path=output_dir / 'validation_accuracy.png',
+        ),
+        'validation_loss': plot_metric_curves(
+            histories,
+            metric='val_loss',
+            title='Validation Loss by Architecture',
+            ylabel='Loss',
+            save_path=output_dir / 'validation_loss.png',
+        ),
+        'test_accuracy': plot_bar_chart(
+            {name: result['test_acc'] for name, result in results.items()},
+            title='Test Accuracy by Architecture',
+            ylabel='Accuracy (%)',
+            save_path=output_dir / 'test_accuracy.png',
+        ),
+    }
 
-    plot_metric_curves(
-        histories,
-        metric='val_loss',
-        title='Validation Loss by Architecture',
-        ylabel='Loss',
-        save_path=output_dir / 'validation_loss.png',
-    )
-
-    plot_bar_chart(
-        {name: result['test_acc'] for name, result in results.items()},
-        title='Test Accuracy by Architecture',
-        ylabel='Accuracy (%)',
-        save_path=output_dir / 'test_accuracy.png',
-    )
+    if return_figures:
+        return results, figure_paths
 
     return results
 
