@@ -270,7 +270,7 @@ class MuonFast(Optimizer):
 
         # Handle the zero-update corner case explicitly to avoid NaNs in normalization.
         frob_norm = torch.linalg.norm(gram)
-        if frob_norm == 0.0:
+        if torch.isclose(frob_norm, torch.tensor(0.0, device=gram.device, dtype=frob_norm.dtype)):
             return update
 
         identity = torch.eye(n, device=device, dtype=dtype)
