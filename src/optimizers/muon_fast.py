@@ -651,10 +651,9 @@ class MuonFast(Optimizer):
                         upper=False,
                         left=True,
                     )
-                    inv_sqrt = inv_lower.transpose(0, 1) @ inv_lower
                     if left_multiply:
-                        return inv_sqrt @ mat
-                    return mat @ inv_sqrt
+                        return inv_lower @ mat
+                    return mat @ inv_lower.transpose(0, 1)
             except RuntimeError:
                 pass
 
