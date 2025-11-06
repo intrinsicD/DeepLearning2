@@ -2,6 +2,7 @@
 
 from .custom_sgd import CustomSGD
 from .custom_adam import CustomAdam
+from .gda2 import GDA2
 from .muon_fast import MuonFast
 from .andersonGDS import AndersonGDA
 
@@ -10,4 +11,5 @@ __all__ = [
     'CustomAdam',
     'MuonFast',
     'AndersonGDA',
+    'GDA2',
 ]
