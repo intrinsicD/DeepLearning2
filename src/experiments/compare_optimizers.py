@@ -56,7 +56,18 @@ def compare_optimizers(
             'Adam': torch.optim.Adam(model.parameters(), lr=0.001),
             'CustomSGD': CustomSGD(model.parameters(), lr=0.01, momentum=0.9),
             'CustomAdam': CustomAdam(model.parameters(), lr=0.001),
-            'MuonFast': MuonFast(model.parameters(), lr=0.001, momentum=0.95),
+            'MuonFast': MuonFast(
+                model.parameters(),
+                lr=0.0001,
+                momentum=0.95,
+                nesterov=True,
+                model=model,  # Pass model for reliable name-based exclusion
+                # exclude_fn now uses names: will auto-exclude fc2, biases, norms
+                scale_mode="spectral",  # NeMo default
+                scale_extra=0.1,  # Tuned for small CNN
+                ns_coefficients="simple",  # Stable
+                ns_tol=1e-3,  # Size-normalized tolerance
+            ),
         }
 
     results = {}

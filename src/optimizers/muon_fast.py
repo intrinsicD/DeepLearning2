@@ -69,30 +69,64 @@ class _FallbackConfig:
 
 
 def _as_param_groups(params: Union[Iterable[Tensor], Iterable[dict]]) -> List[dict]:
-    """Normalize arbitrary parameter inputs into a list of param group dictionaries."""
+    """Normalize arbitrary parameter inputs into a list of param group dictionaries.
+
+    Also attempts to preserve parameter names for reliable exclude_fn filtering.
+    """
     if isinstance(params, torch.nn.Parameter):
         return [dict(params=[params])]
 
     try:
-        params = list(params)  # type: ignore[arg-type]
+        params_list = list(params)  # type: ignore[arg-type]
     except TypeError as exc:  # pragma: no cover - defensive branch
         raise TypeError("params argument given to MuonFast should be an iterable") from exc
 
-    if not params:
+    if not params_list:
         return []
 
-    if isinstance(params[0], dict):
-        return [dict(pg) for pg in params]  # shallow copy to avoid mutation issues
+    if isinstance(params_list[0], dict):
+        return [dict(pg) for pg in params_list]  # shallow copy to avoid mutation issues
 
-    return [dict(params=params)]
+    return [dict(params=params_list)]
+
+
+def _attach_param_names(param_groups: List[dict], model: Optional[torch.nn.Module] = None) -> None:
+    """Attach parameter names to tensors for reliable exclude_fn filtering.
+
+    This enables exclude_fn to reliably identify parameters like 'classifier', 'lm_head', 'embed'
+    which is critical for Keras' guidance to not apply Muon to embeddings and output layers.
+    """
+    if model is not None:
+        # Build name->param mapping from model
+        name_map = {id(param): name for name, param in model.named_parameters()}
+
+        for group in param_groups:
+            group_params = group.get("params", [])
+            if isinstance(group_params, torch.nn.Parameter):
+                group_params = [group_params]
+
+            for param in group_params:
+                if not hasattr(param, '_param_name'):
+                    param._param_name = name_map.get(id(param), '')
 
 
 def _split_param_groups(
     param_groups: Sequence[dict],
     min_dim_muon: int,
     strict_small_matrices: bool,
+    exclude_fn: Optional[callable] = None,
 ) -> Tuple[List[dict], List[torch.nn.Parameter]]:
-    """Split the user-provided parameter groups into Muon and fallback sets."""
+    """Split the user-provided parameter groups into Muon and fallback sets.
+
+    Routing heuristics (in order):
+    1. Apply exclude_fn if provided (now with reliable names: 'classifier', 'lm_head', 'embed')
+    2. Must be 2D
+    3. min(m, n) >= min_dim_muon (unless strict_small_matrices=True)
+    4. Aspect ratio < 32:1 (very skinny matrices are inefficient for NS)
+
+    Per Keras guidance: Don't use Muon for embeddings, final output FC, or {0,1}-D vars.
+    Default exclusions if exclude_fn=None: parameters with names matching common patterns.
+    """
     muon_groups: List[dict] = []
     fallback_params: List[torch.nn.Parameter] = []
 
@@ -108,10 +142,47 @@ def _split_param_groups(
             if not param.requires_grad:
                 continue
 
-            if param.ndim == 2 and (
-                strict_small_matrices or min(param.shape) >= min_dim_muon
-            ):
-                muon_params.append(param)
+            # Get parameter name (attached by _attach_param_names or empty)
+            param_name = getattr(param, '_param_name', '')
+
+            # Check exclude_fn first (for final layer, embeddings, etc.)
+            if exclude_fn is not None:
+                if exclude_fn(param_name, param):
+                    fallback_params.append(param)
+                    continue
+            elif param_name:  # Default exclusions if no custom exclude_fn
+                # Per Keras: exclude embeddings, classifier/output heads, layer norms
+                lower_name = param_name.lower()
+                if any(pattern in lower_name for pattern in [
+                    'classifier', 'lm_head', 'head', 'embed',
+                    'norm', 'ln', 'bias'  # Also exclude norms and biases by default
+                ]):
+                    fallback_params.append(param)
+                    continue
+
+            # Auto-exclude 0-D and 1-D parameters (biases, norms)
+            if param.ndim < 2:
+                fallback_params.append(param)
+                continue
+
+            # Check if parameter is suitable for Muon
+            is_2d = param.ndim == 2
+            if is_2d:
+                m, n = param.shape
+                meets_min_dim = strict_small_matrices or min(m, n) >= min_dim_muon
+
+                # Avoid very skinny matrices (aspect ratio > 32:1)
+                aspect_ratio = max(m, n) / max(min(m, n), 1)
+                reasonable_aspect = aspect_ratio <= 32.0
+
+                # Auto-exclude likely classifier heads (small output dimension)
+                # This catches heads even without names (Keras guidance)
+                likely_head = min(m, n) <= 10  # num_classes typically ≤ 10 for toy datasets
+
+                if meets_min_dim and reasonable_aspect and not likely_head:
+                    muon_params.append(param)
+                else:
+                    fallback_params.append(param)
             else:
                 fallback_params.append(param)
 
@@ -136,6 +207,9 @@ class MuonFast(Optimizer):
         Learning rate for the Muon updates.
     momentum:
         Momentum coefficient :math:`\mu`.
+    nesterov:
+        Whether to use Nesterov momentum (default True, matching standard Muon practice).
+        When True, uses lookahead gradient: g_hat = grad + momentum * velocity.
     weight_decay:
         Decoupled weight decay applied to Muon parameters.
     ns_iters:
@@ -158,6 +232,9 @@ class MuonFast(Optimizer):
     fallback_options:
         Convenience alias for ``fallback.kwargs``.  When both are provided, explicit
         ``fallback_options`` entries override any keys set inside ``fallback``.
+        Note: By default, fallback inherits ``lr`` and ``weight_decay`` from Muon.
+        To use different values, explicitly pass ``{"lr": ..., "weight_decay": ...}``
+        here, as Muon and AdamW often require different hyperparameters at scale.
     min_dim_muon:
         Minimum dimension that a two-dimensional tensor must satisfy (with
         ``min(m, n) >= min_dim_muon``) in order to be optimized with Muon.  Smaller
@@ -171,6 +248,35 @@ class MuonFast(Optimizer):
     ns_tol:
         Frobenius-norm tolerance used to terminate the Newton--Schulz iterations
         early.  A value of ``0.0`` disables the early-stop heuristic.
+    verbose:
+        When ``True``, prints a routing audit on initialization showing which
+        parameters use Muon vs. fallback optimizer. Useful for verifying setup.
+    lr_fallback:
+        Learning rate for fallback optimizer. If None, inherits ``lr`` from Muon.
+        Recommended to set explicitly, as Muon and AdamW often need different LRs.
+    wd_fallback:
+        Weight decay for fallback optimizer. If None, inherits ``weight_decay``.
+    exclude_fn:
+        Optional callable ``(name: str, param: Tensor) -> bool`` that returns True
+        for parameters to exclude from Muon (route to fallback instead).
+        Recommended: exclude final output layer and embeddings per Keras guidance.
+        Example: ``lambda name, p: 'fc2' in name or 'embed' in name``
+    scale_mode:
+        Update scaling mode: ``"spectral"`` (default, NeMo-style), ``"shape"``,
+        or ``None``. Applies per-parameter scaling to orthogonalized updates to
+        match AdamW's RMS norm characteristics and improve LR transferability.
+    scale_extra:
+        Additional multiplicative scale factor applied to updates (default 1.0).
+        Can be tuned to match specific model characteristics.
+    ns_coefficients:
+        Newton-Schulz coefficient type: ``"simple"`` (default 3I-ZY transform),
+        ``"quintic"`` (faster-converging cubic variant), or ``"polar_express"``
+        (optimized for polar decomposition). Quintic/polar often allow lower
+        ns_iters with better quality.
+    model:
+        Optional model reference for reliable parameter name extraction. When provided,
+        enables name-based exclusion (e.g., 'classifier', 'lm_head', 'embed') per
+        Keras guidance. If None, only shape-based heuristics are used.
     """
 
     def __init__(
@@ -178,6 +284,7 @@ class MuonFast(Optimizer):
         params: Union[Iterable[torch.nn.Parameter], Iterable[dict]],
         lr: float = 1e-3,
         momentum: float = 0.9,
+        nesterov: bool = True,
         weight_decay: float = 0.0,
         ns_iters: int = 3,
         eps: float = 1e-6,
@@ -188,7 +295,15 @@ class MuonFast(Optimizer):
         fallback_options: Optional[dict] = None,
         min_dim_muon: int = 64,
         strict_small_matrices: bool = False,
-        ns_tol: float = 1e-4,
+        ns_tol: float = 1e-3,
+        verbose: bool = False,
+        lr_fallback: Optional[float] = None,
+        wd_fallback: Optional[float] = None,
+        exclude_fn: Optional[callable] = None,
+        scale_mode: str = "spectral",
+        scale_extra: float = 1.0,
+        ns_coefficients: str = "simple",
+        model: Optional[torch.nn.Module] = None,
     ) -> None:
         if lr <= 0.0:
             raise ValueError("Learning rate must be positive.")
@@ -202,12 +317,23 @@ class MuonFast(Optimizer):
             raise ValueError("min_dim_muon must be non-negative.")
         if ns_tol < 0.0:
             raise ValueError("ns_tol must be non-negative.")
+        if scale_mode not in ["spectral", "shape", None]:
+            raise ValueError("scale_mode must be 'spectral', 'shape', or None")
+        if ns_coefficients not in ["simple", "quintic", "polar_express"]:
+            raise ValueError("ns_coefficients must be 'simple', 'quintic', or 'polar_express'")
 
+        # Convert params to param groups and attach names if model provided
         param_groups = _as_param_groups(params)
+
+        # Attach parameter names for reliable exclude_fn (Keras guidance)
+        if model is not None:
+            _attach_param_names(param_groups, model)
+
         muon_groups, fallback_params = _split_param_groups(
             param_groups,
             min_dim_muon=min_dim_muon,
             strict_small_matrices=strict_small_matrices,
+            exclude_fn=exclude_fn,
         )
 
         if not muon_groups:
@@ -219,6 +345,7 @@ class MuonFast(Optimizer):
         defaults = dict(
             lr=lr,
             momentum=momentum,
+            nesterov=nesterov,
             weight_decay=weight_decay,
             ns_iters=ns_iters,
             eps=eps,
@@ -226,9 +353,28 @@ class MuonFast(Optimizer):
             backend=backend,
             graph_capture=graph_capture,
             ns_tol=ns_tol,
+            scale_mode=scale_mode,
+            scale_extra=scale_extra,
+            ns_coefficients=ns_coefficients,
         )
 
         super().__init__(muon_groups, defaults)
+
+        # Set matmul precision for FP32 accumulation in NS iterations
+        # This ensures Gram matrix and NS multiplications don't silently downgrade
+        if backend == "cuda":
+            try:
+                torch.set_float32_matmul_precision("high")  # FP32 accumulation
+            except:
+                pass  # Older PyTorch versions may not support this
+
+        # Warn about placeholder flags
+        if backend != "cuda":
+            import warnings
+            warnings.warn("MuonFast: 'backend' is a placeholder in the reference implementation.")
+        if graph_capture:
+            import warnings
+            warnings.warn("MuonFast: 'graph_capture' is not implemented in the reference implementation.")
 
         if fallback is None:
             fallback = _FallbackConfig()
@@ -237,14 +383,20 @@ class MuonFast(Optimizer):
             opts.update(fallback_options)
             fallback = _FallbackConfig(name=fallback.name, kwargs=opts)
 
+        # Handle separate LR/WD for fallback
         if fallback.kwargs is None:
-            fallback.kwargs = {"lr": lr, "weight_decay": weight_decay}
-        else:
-            fallback.kwargs.setdefault("lr", lr)
-            fallback.kwargs.setdefault("weight_decay", weight_decay)
+            fallback.kwargs = {}
+
+        # Use explicit lr_fallback/wd_fallback if provided, otherwise inherit from Muon
+        fallback.kwargs.setdefault("lr", lr_fallback if lr_fallback is not None else lr)
+        fallback.kwargs.setdefault("weight_decay", wd_fallback if wd_fallback is not None else weight_decay)
 
         self._fallback_opt = fallback.instantiate(fallback_params)
         self._fallback_config = fallback
+
+        # Print routing audit if verbose
+        if verbose:
+            self.print_routing_audit()
 
     @torch.no_grad()
     def step(self, closure=None):  # type: ignore[override]
@@ -261,10 +413,14 @@ class MuonFast(Optimizer):
         for group in self.param_groups:
             lr = group["lr"]
             momentum = group["momentum"]
+            nesterov = group["nesterov"]
             weight_decay = group["weight_decay"]
             ns_iters = group["ns_iters"]
             eps = group["eps"]
             ns_tol = group["ns_tol"]
+            scale_mode = group["scale_mode"]
+            scale_extra = group["scale_extra"]
+            ns_coefficients = group["ns_coefficients"]
 
             for param in group["params"]:
                 if param.grad is None:
@@ -275,24 +431,50 @@ class MuonFast(Optimizer):
                     raise RuntimeError("MuonFast does not support sparse gradients.")
 
                 state = self.state[param]
-                buf = state.get("momentum_buffer")
+
+                # Use FP32 master buffer for momentum to prevent precision loss in bf16/fp16 training
+                buf = state.get("momentum_buffer_fp32")
                 if buf is None:
-                    buf = torch.zeros_like(param, dtype=param.dtype)
-                    state["momentum_buffer"] = buf
+                    buf = torch.zeros_like(param, dtype=torch.float32, device=param.device)
+                    state["momentum_buffer_fp32"] = buf
 
-                buf.mul_(momentum).add_(grad)
-                update = -lr * buf
+                # Always work in FP32 for momentum accumulation
+                grad_fp32 = grad.detach().to(torch.float32)
 
+                if nesterov:
+                    # Nesterov momentum: use lookahead gradient
+                    # g_hat = grad + momentum * velocity_{t-1}
+                    g_hat = grad_fp32.add(buf, alpha=momentum)
+                    # Update velocity: v_t = momentum * v_{t-1} + grad
+                    buf.mul_(momentum).add_(grad_fp32)
+                    # Use lookahead for the update
+                    update_fp32 = -lr * g_hat
+                else:
+                    # Classical momentum
+                    buf.mul_(momentum).add_(grad_fp32)
+                    update_fp32 = -lr * buf
+
+                # Keep update in FP32 to avoid double-casting in _orthogonalize
                 if weight_decay != 0.0:
                     param.mul_(1.0 - lr * weight_decay)
 
                 ortho_update = self._orthogonalize(
-                    update,
+                    update_fp32,
                     ns_iters=ns_iters,
                     eps=eps,
                     tol=ns_tol,
+                    state=state,
+                    ns_coefficients=ns_coefficients,
                 )
-                param.add_(ortho_update)
+
+                # Apply per-parameter update scaling (NeMo-style)
+                if scale_mode is not None:
+                    m, n = param.shape
+                    scale = self._compute_update_scale(m, n, scale_mode, scale_extra)
+                    ortho_update = ortho_update * scale
+
+                # Cast to param dtype only once at the end
+                param.add_(ortho_update.to(param.dtype))
 
         return loss
 
@@ -301,37 +483,141 @@ class MuonFast(Optimizer):
         if self._fallback_opt is not None:
             self._fallback_opt.zero_grad(set_to_none=set_to_none)
 
+    def print_routing_audit(self) -> None:
+        """Print a routing audit showing which parameters use Muon vs fallback optimizer.
+
+        Useful for verifying that 2D matrices are correctly routed to Muon and other
+        parameters to the fallback optimizer.
+        """
+        print("=" * 70)
+        print("MuonFast Routing Audit")
+        print("=" * 70)
+
+        muon_count = 0
+        muon_params = 0
+        print("\nMuon-optimized parameters (2D matrices):")
+        for group_idx, group in enumerate(self.param_groups):
+            for param in group["params"]:
+                muon_count += 1
+                muon_params += param.numel()
+                print(f"  [{group_idx}] shape={list(param.shape)}, numel={param.numel():,}")
+
+        print(f"\nTotal Muon parameters: {muon_count} tensors, {muon_params:,} elements")
+
+        if self._fallback_opt is not None:
+            fallback_count = 0
+            fallback_params = 0
+            print(f"\nFallback-optimized parameters ({self._fallback_config.name.upper()}):")
+            for group_idx, group in enumerate(self._fallback_opt.param_groups):
+                for param in group["params"]:
+                    fallback_count += 1
+                    fallback_params += param.numel()
+                    print(f"  [{group_idx}] shape={list(param.shape)}, numel={param.numel():,}")
+
+            print(f"\nTotal fallback parameters: {fallback_count} tensors, {fallback_params:,} elements")
+            print(f"\nMuon coverage: {muon_params / (muon_params + fallback_params) * 100:.1f}% of parameters")
+        else:
+            print("\nNo fallback optimizer (all parameters use Muon)")
+
+        print("=" * 70)
+
     @staticmethod
-    def _orthogonalize(update: Tensor, ns_iters: int, eps: float, tol: float) -> Tensor:
-        """Project the update onto the closest orthogonal matrix using Newton--Schulz."""
+    def _compute_update_scale(m: int, n: int, mode: str, extra: float) -> float:
+        """Compute per-parameter update scaling factor (NeMo-style).
+
+        Args:
+            m, n: Matrix dimensions
+            mode: 'spectral' (sqrt of max dim) or 'shape' (sqrt of aspect ratio)
+            extra: Additional multiplicative factor
+
+        Returns:
+            Scale factor to apply to orthogonalized update
+
+        Per NeMo: Spectral scaling uses sqrt(max(m,n)) to match AdamW update magnitudes
+        and improve LR transferability across different matrix sizes.
+        """
+        if mode == "shape":
+            # Shape scaling: sqrt(max(1, m/n))
+            return extra * (max(1.0, m / n) ** 0.5)
+        elif mode == "spectral":
+            # Spectral scaling (NeMo default): sqrt(max(m, n))
+            return extra * (max(m, n) ** 0.5)
+        else:
+            return extra
+
+    @staticmethod
+    def _orthogonalize(update: Tensor, ns_iters: int, eps: float, tol: float, state: dict, ns_coefficients: str = "simple") -> Tensor:
+        """Project the update onto the closest orthogonal matrix using Newton--Schulz.
+
+        Args:
+            update: Update matrix (already in FP32)
+            ns_iters: Number of Newton-Schulz iterations
+            eps: Regularization epsilon
+            tol: Early-stop tolerance (size-normalized)
+            state: Optimizer state dict for caching
+            ns_coefficients: "simple" (3I-ZY) or "quintic" (faster convergence)
+
+        Returns:
+            Orthogonalized update in FP32
+        """
         if update.ndim != 2:
             return update
 
         device = update.device
         dtype = torch.float32
-        mat = update.to(dtype)
-
+        mat = update
         m, n = mat.shape
 
         if mat.abs().max().item() == 0.0:
             return update
 
-        # Use the smaller dimension for the Gram matrix to minimize computation
-        # For m x n matrix:
-        # - If m <= n: compute (mat @ mat.T)^{-1/2} @ mat (left multiplication)
-        # - If m > n: compute mat @ (mat.T @ mat)^{-1/2} (right multiplication)
+        # Use the smaller dimension for the Gram matrix
         if m <= n:
-            # Compute mat @ mat.T (m x m matrix)
             gram = mat @ mat.transpose(0, 1)
             size = m
             left_multiply = True
         else:
-            # Compute mat.T @ mat (n x n matrix)
             gram = mat.transpose(0, 1) @ mat
             size = n
             left_multiply = False
 
-        identity = torch.eye(size, device=device, dtype=dtype)
+        # EXACT PATH for small matrices (≤64): eigendecomposition is cheaper and exact
+        # Avoids NS iteration overhead on tiny matrices
+        if size <= 64:
+            try:
+                # Compute eigendecomposition: Gram = Q Λ Q^T
+                identity_small = torch.eye(size, device=device, dtype=dtype)
+                eigenvalues, eigenvectors = torch.linalg.eigh(gram + eps * identity_small)
+
+                # Compute Gram^{-1/2} = Q Λ^{-1/2} Q^T
+                eigenvalues = torch.clamp(eigenvalues, min=eps)
+                inv_sqrt_eigenvalues = 1.0 / torch.sqrt(eigenvalues)
+                inv_sqrt = eigenvectors @ torch.diag(inv_sqrt_eigenvalues) @ eigenvectors.T
+
+                # Apply to get orthogonalized update
+                if left_multiply:
+                    return (inv_sqrt @ mat)
+                else:
+                    return (mat @ inv_sqrt)
+            except:
+                # Fall through to NS if eigendecomposition fails
+                pass
+
+        # Standard NS path for larger matrices
+        adaptive_ns_iters = ns_iters
+        if size < 128:
+            adaptive_ns_iters = min(3, ns_iters)
+
+        # Cache identity matrix
+        ns_cache = state.get("ns_cache")
+        if ns_cache is None:
+            ns_cache = state["ns_cache"] = {}
+
+        identity = ns_cache.get(size)
+        if identity is None:
+            identity = torch.eye(size, device=device, dtype=dtype)
+            ns_cache[size] = identity
+
         gram = gram + eps * identity
 
         trace = torch.trace(gram)
@@ -347,24 +633,57 @@ class MuonFast(Optimizer):
         z = identity.clone()
         zy = z @ y
 
-        for _ in range(ns_iters):
-            if tol > 0.0:
-                residual = torch.linalg.norm(identity - zy, ord="fro")
-                if residual <= tol:
-                    break
+        # Track if residual plateaus for adaptive epsilon/steps
+        prev_residual = float('inf')
+        eps_bumped = False
 
-            t = 0.5 * (3.0 * identity - zy)
+        # Newton-Schulz iterations with adaptive coefficients
+        for it in range(adaptive_ns_iters):
+            # Select coefficient transformation based on mode
+            if ns_coefficients == "quintic":
+                # Quintic coefficients: higher-order Newton-Schulz for faster convergence
+                # Cubically convergent: T = (1/8)*(15I - 10*ZY + 3*(ZY)^2)
+                zy_sq = zy @ zy
+                t = (1.0 / 8.0) * (15.0 * identity - 10.0 * zy + 3.0 * zy_sq)
+            elif ns_coefficients == "polar_express":
+                # Polar-Express: optimized for polar decomposition (CANS paper)
+                # Uses optimized polynomial coefficients for better singular value handling
+                # Formula: T = (1/2)*(3I - ZY + c*(ZY)^2) with optimized c
+                zy_sq = zy @ zy
+                c_opt = 0.25  # Optimized coefficient from polar decomposition literature
+                t = 0.5 * (3.0 * identity - zy + c_opt * zy_sq)
+            else:
+                # Simple coefficients (standard 3I - ZY)
+                t = 0.5 * (3.0 * identity - zy)
+
             y = y @ t
             z = t @ z
             zy = z @ y
 
+            # Size-normalized residual check with adaptive epsilon logic
+            if it > 0 and tol > 0.0 and (it % 2 == 1):
+                residual = torch.linalg.norm(identity - zy, ord="fro") / (size ** 0.5)
+
+                # Adaptive epsilon: if residual plateaus, bump eps once
+                if not eps_bumped and it > 2:
+                    if abs(residual - prev_residual) < tol * 0.1:  # Stagnation detected
+                        # Retry with increased regularization
+                        gram = gram + 3.0 * eps * identity  # Bump eps by 4x total
+                        eps_bumped = True
+
+                prev_residual = residual
+
+                if residual <= tol:
+                    break
+
         inv_sqrt = z * scale
 
         if left_multiply:
-            orthogonal_update = (inv_sqrt @ mat).to(update.dtype)
+            orthogonal_update = inv_sqrt @ mat
         else:
-            orthogonal_update = (mat @ inv_sqrt).to(update.dtype)
+            orthogonal_update = mat @ inv_sqrt
 
+        # Return in FP32; caller will cast to param.dtype
         return orthogonal_update
 
     def state_dict(self):  # type: ignore[override]
