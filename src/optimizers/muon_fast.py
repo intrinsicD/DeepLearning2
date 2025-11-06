@@ -264,16 +264,31 @@ class MuonFast(Optimizer):
         dtype = torch.float32
         mat = update.to(dtype)
 
-        gram = mat.transpose(0, 1) @ mat
-        n = gram.shape[0]
-        gram = gram + eps * torch.eye(n, device=device, dtype=dtype)
+        m, n = mat.shape
+
+        # Use the smaller dimension for the Gram matrix to minimize computation
+        # For m x n matrix:
+        # - If m <= n: compute (mat @ mat.T)^{-1/2} @ mat (left multiplication)
+        # - If m > n: compute mat @ (mat.T @ mat)^{-1/2} (right multiplication)
+        if m <= n:
+            # Compute mat @ mat.T (m x m matrix)
+            gram = mat @ mat.transpose(0, 1)
+            size = m
+            left_multiply = True
+        else:
+            # Compute mat.T @ mat (n x n matrix)
+            gram = mat.transpose(0, 1) @ mat
+            size = n
+            left_multiply = False
+
+        gram = gram + eps * torch.eye(size, device=device, dtype=dtype)
 
         # Handle the zero-update corner case explicitly to avoid NaNs in normalization.
         frob_norm = torch.linalg.norm(gram)
         if torch.isclose(frob_norm, torch.tensor(0.0, device=gram.device, dtype=frob_norm.dtype)):
             return update
 
-        identity = torch.eye(n, device=device, dtype=dtype)
+        identity = torch.eye(size, device=device, dtype=dtype)
         y = gram / frob_norm
         z = identity.clone()
 
@@ -283,7 +298,12 @@ class MuonFast(Optimizer):
             z = t @ z
 
         inv_sqrt = z / math.sqrt(frob_norm)
-        orthogonal_update = (mat @ inv_sqrt).to(update.dtype)
+
+        if left_multiply:
+            orthogonal_update = (inv_sqrt @ mat).to(update.dtype)
+        else:
+            orthogonal_update = (mat @ inv_sqrt).to(update.dtype)
+
         return orthogonal_update
 
     def state_dict(self):  # type: ignore[override]
