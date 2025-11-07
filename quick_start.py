@@ -13,7 +13,7 @@ import torch.nn as nn
 from src.architectures import FullyConnectedNet, ResNet, SimpleCNN
 from src.experiments.compare_architectures import compare_architectures
 from src.experiments.compare_optimizers import compare_optimizers
-from src.optimizers import CustomAdam, CustomSGD
+from src.optimizers import AndersonGDA, CustomAdam, CustomSGD, GDA2, MuonFast
 from src.utils import Trainer, get_device, print_gpu_info
 
 
@@ -58,6 +58,9 @@ def demo_optimizers() -> None:
         'PyTorch Adam': torch.optim.Adam(model.parameters(), lr=0.001),
         'Custom SGD': CustomSGD(model.parameters(), lr=0.01, momentum=0.9),
         'Custom Adam': CustomAdam(model.parameters(), lr=0.001),
+        'Muon Fast': MuonFast(model.parameters(), lr=0.0001),
+        'Anderson GDA': AndersonGDA(model.parameters(), lr=0.0001),
+        'GDA2': GDA2(model.parameters(), lr=0.001),
     }
 
     for name, optimizer in optimizers.items():

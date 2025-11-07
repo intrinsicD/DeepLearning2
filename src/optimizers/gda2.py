@@ -181,7 +181,7 @@ class GDA2(Optimizer):
                     dx_cols: TensorList = []
                     weights: List[float] = []
 
-                    for j in range(-pairs - 1, -1):
+                    for j in range(-pairs, 0):
                         df = (f_cols[j + 1] - f_cols[j]).to(self.solver_dtype)
                         s = s_cols[j].to(self.solver_dtype)
                         y = (g_cols[j + 1] - g_cols[j]).to(self.solver_dtype)

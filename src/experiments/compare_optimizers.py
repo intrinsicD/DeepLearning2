@@ -8,7 +8,7 @@ from typing import Any, Dict, Tuple
 import torch
 import torch.nn as nn
 from src.architectures import SimpleCNN
-from src.optimizers import CustomAdam, CustomSGD, MuonFast
+from src.optimizers import AndersonGDA, CustomAdam, CustomSGD, GDA2, MuonFast
 from src.utils import (
     Trainer,
     get_device,
@@ -56,6 +56,8 @@ def compare_optimizers(
             'Adam': torch.optim.Adam(model.parameters(), lr=0.001),
             'CustomSGD': CustomSGD(model.parameters(), lr=0.01, momentum=0.9),
             'CustomAdam': CustomAdam(model.parameters(), lr=0.001),
+            'AndersonGDA': AndersonGDA(model.parameters(), lr=0.001),
+            'GDA2': GDA2(model.parameters(), lr=0.001),
             'MuonFast': MuonFast(
                 model.parameters(),
                 lr=0.0001,
@@ -73,7 +75,7 @@ def compare_optimizers(
     results = {}
 
     # Train and evaluate with each optimizer
-    for name in ['SGD', 'Adam', 'CustomSGD', 'CustomAdam', 'MuonFast']:
+    for name in ['SGD', 'Adam', 'CustomSGD', 'CustomAdam', 'AndersonGDA', 'GDA2', 'MuonFast']:
         print("\n" + "=" * 60)
         print(f"Training with {name} optimizer")
         print("=" * 60)
