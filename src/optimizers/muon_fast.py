@@ -427,8 +427,21 @@ class MuonFast(Optimizer):
         # This ensures Gram matrix and NS multiplications don't silently downgrade
         if backend == "cuda" and matmul_precision is not None:
             try:
-                torch.set_float32_matmul_precision(matmul_precision)
-            except:
+                # Use new API (PyTorch 2.9+) to avoid deprecation warnings
+                if hasattr(torch.backends.cuda.matmul, 'fp32_precision'):
+                    # Map old precision values to new API values
+                    precision_map = {
+                        "high": "ieee",      # High precision = IEEE FP32
+                        "medium": "tf32",    # Medium precision = TensorFloat-32
+                        "default": "tf32",   # Default = TensorFloat-32
+                    }
+                    new_precision = precision_map.get(matmul_precision, matmul_precision)
+                    torch.backends.cuda.matmul.fp32_precision = new_precision
+                    torch.backends.cudnn.conv.fp32_precision = new_precision
+                else:
+                    # Fallback to old API for older PyTorch versions
+                    torch.set_float32_matmul_precision(matmul_precision)
+            except Exception:
                 pass  # Older PyTorch versions may not support this
 
         # Warn about placeholder flags
@@ -642,20 +655,32 @@ class MuonFast(Optimizer):
         - ``spectral``: sqrt(max(m,n)) scaling per NeMo (matches AdamW magnitudes)
         - ``shape``: sqrt(max(1, m/n)) aspect ratio compensation
         - ``rms_to_rms``: Normalizes to target RMS (EMA or explicit) for LR transfer
+        - Applies dimension-aware dampening for small matrices (ViT-friendly)
         """
 
+        # Dimension-aware dampening for small matrices (important for ViT)
+        # Reduces update magnitude for matrices smaller than 256x256
+        # This prevents catastrophically large updates on small transformer matrices
+        min_dim = min(m, n)
+        if min_dim < 256:
+            # Very strong dampening for transformers: 1.0 at 256+, ~0.006 at 64
+            # This is critical for Vision Transformers with small weight matrices
+            dim_penalty = (min_dim / 256.0) ** 2.0
+        else:
+            dim_penalty = 1.0
+
         if mode == "shape":
-            return extra * (max(1.0, m / n) ** 0.5)
+            return extra * (max(1.0, m / n) ** 0.5) * dim_penalty
         if mode == "spectral":
-            return extra * (max(m, n) ** 0.5)
+            return extra * (max(m, n) ** 0.5) * dim_penalty
         if mode == "rms_to_rms":
             if update is None:
-                return extra
+                return extra * dim_penalty
             rms = update.pow(2).mean().sqrt().item()
             epsilon = 1e-8
             target = target_rms if target_rms is not None else rms
-            return extra * (target / (rms + epsilon))
-        return extra
+            return extra * (target / (rms + epsilon)) * dim_penalty
+        return extra * dim_penalty
 
     @staticmethod
     def _orthogonalize(update: Tensor, ns_iters: int, eps: float, tol: float, state: dict, ns_coefficients: str = "simple") -> Tensor:

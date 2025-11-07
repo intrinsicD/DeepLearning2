@@ -1,0 +1,113 @@
+================================================================================
+                     MUON vs ADAM: The Critical Difference
+================================================================================
+ADAM (What Works - 96.89% on ViT):
+-----------------------------------
+1. Compute gradient: g_t
+2. Update first moment: m_t = β₁·m_{t-1} + (1-β₁)·g_t
+3. Update second moment: v_t = β₂·v_{t-1} + (1-β₂)·g_t²
+4. Compute adaptive update: Δ = -lr · m_t / (√v_t + ε)
+5. Apply update: W_{t+1} = W_t + Δ
+Key Properties:
+✅ Per-parameter adaptive learning rate (via v_t)
+✅ Update magnitude proportional to gradient
+✅ Automatic scaling for different parameter types
+✅ Update size: 0.01% to 0.1% of parameter norm
+Example (64×64 weight):
+- Gradient norm: 3.0
+- Update norm: 0.02 (relative: 0.15% of param)
+- Loss: 2.80 → 2.55 ✅ DECREASES
+MUON (What Fails - 9.82% on ViT):
+----------------------------------
+1. Compute gradient: g_t
+2. Update velocity: v_t = μ·v_{t-1} + g_t  
+3. Compute raw update: Δ_raw = -lr · v_t
+4. ORTHOGONALIZE: Δ_ortho = NewtonSchulz(Δ_raw)  ← THE PROBLEM!
+5. Scale: Δ_final = Δ_ortho · scale_factor · √max(m,n) · dim_penalty
+6. Apply update: W_{t+1} = W_t + Δ_final
+Key Properties:
+❌ No per-parameter adaptive scaling (like SGD)
+❌ Update magnitude DISCONNECTED from gradient (forced by orthogonalization)
+❌ All updates have norm ≈ √min_dim regardless of gradient
+❌ Update size: 1% to 10% of parameter norm (too large!)
+Example (64×64 weight):
+- Gradient norm: 3.0
+- Raw update norm: 0.003
+- After orthogonalization: 8.0 (!!)
+- After scaling: 0.5 (relative: 3.8% of param)
+- Loss: 2.80 → 5.21 ❌ INCREASES!!
+================================================================================
+                        THE ORTHOGONALIZATION PROBLEM
+================================================================================
+What Newton-Schulz Does:
+------------------------
+Given matrix U, finds closest orthogonal matrix Q where:
+  - Q^T Q = I (columns are orthonormal)
+  - ||Q - U||_F is minimized
+  - ||Q||_F ≈ √min(m,n) ALWAYS
+Concrete Example (64×64 matrix):
+---------------------------------
+Input: Raw momentum update
+  Shape: (64, 64)
+  Norm: 0.003 (tiny! appropriate for lr=0.0003)
+Output: Orthogonalized update  
+  Shape: (64, 64)
+  Norm: 8.0 (huge! scaled by √64)
+Amplification: 8.0 / 0.003 = 2667x !!
+Even with scaling (scale_extra=1.0, dim_penalty=0.0625):
+  Final norm: 8.0 × 1.0 × 0.0625 = 0.5
+  Still 167x larger than raw update!
+================================================================================
+                           INFORMATION LOSS
+================================================================================
+Gradient Information:
+--------------------
+∂Loss/∂W tells you TWO things:
+  1. Direction: which way to move
+  2. Magnitude: how far to move  ← CRITICAL!
+Orthogonalization Destroys:
+---------------------------
+✅ Keeps: Approximate direction (rotated ~30-50°)
+❌ Destroys: Magnitude information
+❌ Destroys: Per-parameter importance  
+❌ Destroys: Gradient-curvature alignment
+For Vision Transformers:
+------------------------
+- Attention weights are SENSITIVE to magnitude
+- Layer norms depend on weight scales
+- Multi-head attention needs balanced updates
+- Small magnitude changes cascade through layers
+Result: Even "correct" magnitude doesn't help if direction is wrong!
+================================================================================
+                        WHY IT WORKS ON LARGE CNNs
+================================================================================
+ResNet-50 Layer4 Conv: (512, 512, 3, 3) → Reshaped to (512, 4608)
+------------------------------------------------------------------
+Orthogonalization norm: √512 ≈ 22.6
+Parameter norm: ~150 (large!)
+Relative update: 22.6 × 0.001 / 150 = 0.015% ✅ Reasonable
+Why it works:
+  ✅ Large min_dim (512) → less amplification  
+  ✅ Large parameter norm (~150) → relative update is small
+  ✅ CNN gradients stable and aligned
+  ✅ Spatial convolutions are less sensitive to scale
+Vision Transformer Attention: (64, 64)
+---------------------------------------
+Orthogonalization norm: √64 ≈ 8.0
+Parameter norm: ~13 (small!)
+Relative update: 8.0 × 0.0003 / 13 = 0.018% (looks ok?)
+Why it STILL fails:
+  ❌ Direction rotated ~40° from gradient
+  ❌ No adaptive scaling across attention/MLP/norms
+  ❌ Attention is hypersensitive to direction errors
+  ❌ Layer coupling amplifies small mistakes
+================================================================================
+                              FINAL VERDICT
+================================================================================
+Muon = SGD momentum + Orthogonal projection + Dimension scaling
+     ≠ Adam + Newton-Schulz
+For Vision Transformers:
+  ❌ Use MuonFast (9.82% accuracy)
+  ✅ Use Adam (96.89% accuracy)
+The orthogonalization is NOT a refinement - it's a complete change in behavior!
+================================================================================

@@ -1,0 +1,39 @@
+================================================================================
+                    GDA2 vs AndersonGDA: Architecture Comparison
+================================================================================
+Component                 | GDA2 (96.84%)              | AndersonGDA (29.02%)
+========================================================================================
+BASE OPTIMIZER            | Adam with adaptive LR      | Plain gradient descent
+                          | Different LR per param     | Fixed LR for all
+----------------------------------------------------------------------------------------
+HISTORY WEIGHTING         | Gradient-curvature aware   | Unweighted (uniform)
+                          | cos * inv_curv * weight    | Simple least-squares
+----------------------------------------------------------------------------------------
+REGULARIZATION            | Curvature-adaptive         | Fixed epsilon (1e-8)
+                          | λ = λ₀(1 + ν·curvature)   | Always same damping
+----------------------------------------------------------------------------------------
+TRUST REGION              | Yes (τ = 1.5)             | No
+                          | Clips large corrections    | Applies any update
+----------------------------------------------------------------------------------------
+DESCENT CHECK             | Yes                        | No
+                          | Falls back if not descent  | Blindly trusts Anderson
+----------------------------------------------------------------------------------------
+PARAMETER SCOPE           | Global (flattened)         | Per-parameter independent
+                          | Captures correlations      | Misses interactions
+----------------------------------------------------------------------------------------
+HISTORY SIZE              | 5 (default)                | 3 (default)
+----------------------------------------------------------------------------------------
+MEMORY MANAGEMENT         | Deque (efficient)          | List with manual pruning
+----------------------------------------------------------------------------------------
+NUMERICAL STABILITY       | float32 solver + fallback  | Native dtype + fallback
+----------------------------------------------------------------------------------------
+FAILURE MODE              | Falls back to Adam         | Diverges
+----------------------------------------------------------------------------------------
+KEY INNOVATION:           | Gradient-difference        | Textbook Anderson
+                          | weighting by curvature     | mixing
+WORKS ON VIT?             | ✅ YES (96.84%)            | ❌ NO (29.02%)
+================================================================================
+VERDICT: GDA2 is a sophisticated hybrid optimizer that adds modern techniques
+         to Anderson acceleration, making it work on non-convex problems.
+         AndersonGDA is a "pure" textbook implementation that only works
+         on convex/quasi-convex problems.

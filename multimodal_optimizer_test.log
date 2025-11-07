@@ -1,0 +1,290 @@
+/home/alex/Documents/DeepLearning2/test_multimodal_optimizers.py:224: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  scaler = GradScaler()
+Using device: cuda
+
+Creating synthetic multimodal dataset...
+Train: 1000 samples, Val: 200 samples
+✓ Loaded CustomAdam and GDA2
+
+================================================================================
+MULTIMODAL NETWORK OPTIMIZER COMPARISON
+================================================================================
+
+Testing 8 optimizers on multimodal network
+Architecture: Text (Transformer) + Image (ViT) + Audio (CNN)
+Dataset: 1000 train, 200 val samples
+Epochs per optimizer: 5
+Objective: CLIP-style InfoNCE (I↔T, I↔A, T↔A)
+
+================================================================================
+Testing: Adam
+================================================================================
+
+/home/alex/Documents/DeepLearning2/test_multimodal_optimizers.py:106: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with autocast():
+Epoch 1/20: Loss=7.2699, Avg R@1=3.08%, I↔T=1.5%, I↔A=1.5%, T↔A=6.0%
+Epoch 2/20: Loss=6.3246, Avg R@1=3.08%, I↔T=2.0%, I↔A=1.5%, T↔A=4.0%
+Epoch 3/20: Loss=6.4481, Avg R@1=2.67%, I↔T=1.5%, I↔A=2.5%, T↔A=4.0%
+Epoch 4/20: Loss=6.4283, Avg R@1=2.83%, I↔T=1.5%, I↔A=1.5%, T↔A=6.0%
+Epoch 5/20: Loss=5.7767, Avg R@1=3.08%, I↔T=2.0%, I↔A=2.0%, T↔A=5.5%
+Epoch 6/20: Loss=5.3460, Avg R@1=3.67%, I↔T=2.5%, I↔A=2.5%, T↔A=6.5%
+Epoch 7/20: Loss=4.9639, Avg R@1=4.25%, I↔T=3.5%, I↔A=3.5%, T↔A=4.5%
+Epoch 8/20: Loss=4.8790, Avg R@1=4.50%, I↔T=3.5%, I↔A=4.0%, T↔A=5.0%
+Epoch 9/20: Loss=4.8273, Avg R@1=4.17%, I↔T=3.5%, I↔A=3.0%, T↔A=5.0%
+Epoch 10/20: Loss=4.5455, Avg R@1=5.00%, I↔T=5.5%, I↔A=6.0%, T↔A=5.0%
+Epoch 11/20: Loss=4.5112, Avg R@1=4.33%, I↔T=4.5%, I↔A=4.0%, T↔A=4.0%
+Epoch 12/20: Loss=4.6804, Avg R@1=5.25%, I↔T=5.0%, I↔A=5.5%, T↔A=5.5%
+Epoch 13/20: Loss=4.2134, Avg R@1=4.75%, I↔T=5.0%, I↔A=4.5%, T↔A=4.5%
+Epoch 14/20: Loss=4.3014, Avg R@1=4.58%, I↔T=4.0%, I↔A=5.0%, T↔A=4.5%
+Epoch 15/20: Loss=4.2184, Avg R@1=4.83%, I↔T=4.0%, I↔A=4.5%, T↔A=5.5%
+Epoch 16/20: Loss=4.2798, Avg R@1=4.92%, I↔T=5.5%, I↔A=4.5%, T↔A=4.5%
+Epoch 17/20: Loss=3.9738, Avg R@1=4.50%, I↔T=4.0%, I↔A=4.5%, T↔A=5.5%
+Epoch 18/20: Loss=4.2531, Avg R@1=4.75%, I↔T=4.0%, I↔A=6.0%, T↔A=4.5%
+Epoch 19/20: Loss=4.1500, Avg R@1=4.33%, I↔T=4.0%, I↔A=5.0%, T↔A=4.5%
+Epoch 20/20: Loss=4.1715, Avg R@1=4.50%, I↔T=4.0%, I↔A=5.0%, T↔A=4.0%
+
+✅ Completed: Avg R@1=4.50% (best: 5.25% at epoch 12)
+
+================================================================================
+Testing: AdamW
+================================================================================
+
+Epoch 1/20: Loss=7.2866, Avg R@1=2.58%, I↔T=1.5%, I↔A=1.0%, T↔A=4.5%
+Epoch 2/20: Loss=6.2952, Avg R@1=2.58%, I↔T=2.0%, I↔A=1.5%, T↔A=4.0%
+Epoch 3/20: Loss=6.0839, Avg R@1=3.33%, I↔T=2.0%, I↔A=2.0%, T↔A=6.0%
+Epoch 4/20: Loss=5.5162, Avg R@1=4.08%, I↔T=3.0%, I↔A=3.5%, T↔A=5.5%
+Epoch 5/20: Loss=5.2853, Avg R@1=3.75%, I↔T=3.5%, I↔A=3.5%, T↔A=4.0%
+Epoch 6/20: Loss=5.0888, Avg R@1=3.75%, I↔T=2.5%, I↔A=3.5%, T↔A=5.0%
+Epoch 7/20: Loss=4.8301, Avg R@1=3.75%, I↔T=3.0%, I↔A=3.5%, T↔A=4.5%
+Epoch 8/20: Loss=4.6154, Avg R@1=4.92%, I↔T=4.5%, I↔A=4.5%, T↔A=5.0%
+Epoch 9/20: Loss=4.2629, Avg R@1=4.83%, I↔T=5.0%, I↔A=4.5%, T↔A=5.0%
+Epoch 10/20: Loss=4.1096, Avg R@1=4.42%, I↔T=3.5%, I↔A=4.5%, T↔A=6.0%
+Epoch 11/20: Loss=4.3167, Avg R@1=4.33%, I↔T=4.5%, I↔A=4.0%, T↔A=4.0%
+Epoch 12/20: Loss=4.3691, Avg R@1=4.58%, I↔T=4.5%, I↔A=5.5%, T↔A=4.5%
+Epoch 13/20: Loss=4.3894, Avg R@1=4.33%, I↔T=4.0%, I↔A=4.5%, T↔A=5.0%
+Epoch 14/20: Loss=4.3918, Avg R@1=4.83%, I↔T=4.5%, I↔A=5.0%, T↔A=4.5%
+Epoch 15/20: Loss=4.2233, Avg R@1=4.17%, I↔T=3.5%, I↔A=4.5%, T↔A=4.0%
+Epoch 16/20: Loss=4.1063, Avg R@1=4.58%, I↔T=3.5%, I↔A=5.0%, T↔A=4.0%
+Epoch 17/20: Loss=4.0436, Avg R@1=4.33%, I↔T=5.0%, I↔A=4.0%, T↔A=3.5%
+Epoch 18/20: Loss=4.0624, Avg R@1=4.83%, I↔T=5.0%, I↔A=5.5%, T↔A=4.0%
+Epoch 19/20: Loss=3.9332, Avg R@1=4.58%, I↔T=5.0%, I↔A=5.5%, T↔A=2.5%
+Epoch 20/20: Loss=3.8587, Avg R@1=4.33%, I↔T=4.0%, I↔A=4.0%, T↔A=4.0%
+
+✅ Completed: Avg R@1=4.33% (best: 4.92% at epoch 8)
+
+================================================================================
+Testing: SGD
+================================================================================
+
+Epoch 1/20: Loss=8.3300, Avg R@1=3.42%, I↔T=2.0%, I↔A=2.0%, T↔A=4.5%
+Epoch 2/20: Loss=6.1311, Avg R@1=3.92%, I↔T=2.5%, I↔A=2.0%, T↔A=5.5%
+Epoch 3/20: Loss=5.7980, Avg R@1=3.58%, I↔T=3.5%, I↔A=2.5%, T↔A=4.0%
+Epoch 4/20: Loss=5.5515, Avg R@1=4.17%, I↔T=2.0%, I↔A=2.5%, T↔A=6.0%
+Epoch 5/20: Loss=5.4873, Avg R@1=4.33%, I↔T=2.0%, I↔A=3.0%, T↔A=5.5%
+Epoch 6/20: Loss=5.4422, Avg R@1=3.67%, I↔T=2.5%, I↔A=3.0%, T↔A=3.5%
+Epoch 7/20: Loss=5.4915, Avg R@1=4.17%, I↔T=2.5%, I↔A=2.5%, T↔A=5.0%
+Epoch 8/20: Loss=5.3998, Avg R@1=3.92%, I↔T=2.5%, I↔A=2.5%, T↔A=4.5%
+Epoch 9/20: Loss=5.3762, Avg R@1=4.08%, I↔T=3.0%, I↔A=2.0%, T↔A=5.0%
+Epoch 10/20: Loss=5.3265, Avg R@1=4.17%, I↔T=3.0%, I↔A=2.5%, T↔A=6.0%
+Epoch 11/20: Loss=5.2434, Avg R@1=4.58%, I↔T=3.5%, I↔A=3.5%, T↔A=6.0%
+Epoch 12/20: Loss=5.0942, Avg R@1=4.83%, I↔T=3.0%, I↔A=3.5%, T↔A=6.5%
+Epoch 13/20: Loss=4.8155, Avg R@1=4.42%, I↔T=3.5%, I↔A=3.5%, T↔A=5.5%
+Epoch 14/20: Loss=4.8235, Avg R@1=4.42%, I↔T=2.5%, I↔A=4.5%, T↔A=3.5%
+Epoch 15/20: Loss=4.4671, Avg R@1=4.33%, I↔T=4.0%, I↔A=3.5%, T↔A=4.5%
+Epoch 16/20: Loss=4.2211, Avg R@1=4.50%, I↔T=4.0%, I↔A=4.5%, T↔A=4.5%
+Epoch 17/20: Loss=4.1876, Avg R@1=5.08%, I↔T=4.5%, I↔A=5.0%, T↔A=5.5%
+Epoch 18/20: Loss=4.0432, Avg R@1=6.00%, I↔T=5.5%, I↔A=5.5%, T↔A=8.0%
+Epoch 19/20: Loss=4.0340, Avg R@1=4.75%, I↔T=4.0%, I↔A=4.5%, T↔A=6.0%
+Epoch 20/20: Loss=4.0123, Avg R@1=5.33%, I↔T=5.0%, I↔A=4.5%, T↔A=4.5%
+
+✅ Completed: Avg R@1=5.33% (best: 6.00% at epoch 18)
+
+================================================================================
+Testing: UniversalMuon (auto)
+================================================================================
+
+Epoch 1/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 2/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 3/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 4/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 5/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 6/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 7/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 8/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 9/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 10/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 11/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 12/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 13/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 14/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 15/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 16/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 17/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 18/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 19/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+Epoch 20/20: Loss=nan, Avg R@1=0.50%, I↔T=0.5%, I↔A=0.5%, T↔A=0.5%
+
+✅ Completed: Avg R@1=0.50% (best: 0.50% at epoch 1)
+
+================================================================================
+Testing: UniversalMuon (preserve)
+================================================================================
+
+Epoch 1/20: Loss=7.3950, Avg R@1=2.33%, I↔T=2.0%, I↔A=2.0%, T↔A=2.5%
+Epoch 2/20: Loss=6.5354, Avg R@1=2.92%, I↔T=2.0%, I↔A=2.0%, T↔A=3.5%
+Epoch 3/20: Loss=6.3719, Avg R@1=3.42%, I↔T=2.0%, I↔A=2.5%, T↔A=5.0%
+Epoch 4/20: Loss=6.2350, Avg R@1=3.50%, I↔T=2.0%, I↔A=3.0%, T↔A=6.0%
+Epoch 5/20: Loss=6.1153, Avg R@1=3.50%, I↔T=2.5%, I↔A=2.5%, T↔A=5.5%
+Epoch 6/20: Loss=5.9985, Avg R@1=3.33%, I↔T=2.0%, I↔A=2.5%, T↔A=5.5%
+Epoch 7/20: Loss=5.8999, Avg R@1=3.75%, I↔T=2.5%, I↔A=2.5%, T↔A=5.0%
+Epoch 8/20: Loss=5.8884, Avg R@1=4.17%, I↔T=2.5%, I↔A=2.5%, T↔A=7.0%
+Epoch 9/20: Loss=5.8440, Avg R@1=3.25%, I↔T=2.5%, I↔A=3.0%, T↔A=3.0%
+Epoch 10/20: Loss=5.6645, Avg R@1=3.42%, I↔T=3.5%, I↔A=2.5%, T↔A=2.5%
+Epoch 11/20: Loss=5.2875, Avg R@1=4.25%, I↔T=3.5%, I↔A=3.5%, T↔A=4.5%
+Epoch 12/20: Loss=5.2312, Avg R@1=4.08%, I↔T=3.0%, I↔A=3.5%, T↔A=5.5%
+Epoch 13/20: Loss=5.2284, Avg R@1=4.08%, I↔T=3.5%, I↔A=4.0%, T↔A=4.0%
+Epoch 14/20: Loss=5.1772, Avg R@1=4.50%, I↔T=4.0%, I↔A=4.5%, T↔A=5.0%
+Epoch 15/20: Loss=5.1328, Avg R@1=4.00%, I↔T=3.5%, I↔A=5.0%, T↔A=2.5%
+Epoch 16/20: Loss=5.0619, Avg R@1=4.50%, I↔T=4.0%, I↔A=3.5%, T↔A=5.0%
+Epoch 17/20: Loss=4.7625, Avg R@1=4.33%, I↔T=3.5%, I↔A=5.0%, T↔A=3.5%
+Epoch 18/20: Loss=4.7428, Avg R@1=4.33%, I↔T=4.0%, I↔A=4.0%, T↔A=4.0%
+Epoch 19/20: Loss=4.6534, Avg R@1=4.33%, I↔T=4.0%, I↔A=5.5%, T↔A=3.5%
+Epoch 20/20: Loss=4.6097, Avg R@1=5.00%, I↔T=4.5%, I↔A=5.5%, T↔A=5.0%
+
+✅ Completed: Avg R@1=5.00% (best: 5.00% at epoch 20)
+
+================================================================================
+Testing: UniversalAndersonGDA
+================================================================================
+
+Epoch 1/20: Loss=7.4531, Avg R@1=2.92%, I↔T=1.5%, I↔A=2.0%, T↔A=4.0%
+Epoch 2/20: Loss=6.3527, Avg R@1=3.17%, I↔T=1.5%, I↔A=1.5%, T↔A=6.5%
+Epoch 3/20: Loss=6.6773, Avg R@1=3.00%, I↔T=1.5%, I↔A=1.5%, T↔A=6.0%
+Epoch 4/20: Loss=5.9743, Avg R@1=3.33%, I↔T=2.5%, I↔A=2.5%, T↔A=4.5%
+Epoch 5/20: Loss=5.5507, Avg R@1=3.58%, I↔T=2.5%, I↔A=3.0%, T↔A=4.0%
+Epoch 6/20: Loss=5.6436, Avg R@1=2.83%, I↔T=1.5%, I↔A=3.0%, T↔A=4.0%
+Epoch 7/20: Loss=5.2884, Avg R@1=3.83%, I↔T=2.5%, I↔A=2.5%, T↔A=5.5%
+Epoch 8/20: Loss=5.3096, Avg R@1=4.33%, I↔T=3.0%, I↔A=4.5%, T↔A=5.5%
+Epoch 9/20: Loss=4.8441, Avg R@1=3.83%, I↔T=3.5%, I↔A=4.0%, T↔A=4.0%
+Epoch 10/20: Loss=4.7929, Avg R@1=3.50%, I↔T=2.5%, I↔A=2.0%, T↔A=4.0%
+Epoch 11/20: Loss=4.8921, Avg R@1=4.92%, I↔T=4.0%, I↔A=4.0%, T↔A=5.5%
+Epoch 12/20: Loss=4.2843, Avg R@1=3.75%, I↔T=3.5%, I↔A=3.0%, T↔A=5.5%
+Epoch 13/20: Loss=4.5277, Avg R@1=4.33%, I↔T=5.0%, I↔A=3.0%, T↔A=5.0%
+Epoch 14/20: Loss=4.2145, Avg R@1=4.50%, I↔T=4.0%, I↔A=5.5%, T↔A=4.0%
+Epoch 15/20: Loss=4.3435, Avg R@1=4.92%, I↔T=4.5%, I↔A=4.5%, T↔A=6.0%
+Epoch 16/20: Loss=4.2253, Avg R@1=4.75%, I↔T=3.5%, I↔A=5.0%, T↔A=4.5%
+Epoch 17/20: Loss=4.1417, Avg R@1=4.75%, I↔T=6.5%, I↔A=4.0%, T↔A=4.0%
+Epoch 18/20: Loss=4.1322, Avg R@1=4.33%, I↔T=4.0%, I↔A=3.5%, T↔A=5.5%
+Epoch 19/20: Loss=4.3633, Avg R@1=5.33%, I↔T=5.0%, I↔A=5.5%, T↔A=5.5%
+Epoch 20/20: Loss=3.9760, Avg R@1=4.67%, I↔T=4.0%, I↔A=4.0%, T↔A=5.5%
+
+✅ Completed: Avg R@1=4.67% (best: 5.33% at epoch 19)
+
+================================================================================
+Testing: CustomAdam
+================================================================================
+
+Epoch 1/20: Loss=7.5454, Avg R@1=2.92%, I↔T=1.5%, I↔A=1.5%, T↔A=4.5%
+Epoch 2/20: Loss=6.1441, Avg R@1=2.75%, I↔T=1.5%, I↔A=1.5%, T↔A=5.0%
+Epoch 3/20: Loss=5.7859, Avg R@1=2.83%, I↔T=2.0%, I↔A=2.0%, T↔A=3.5%
+Epoch 4/20: Loss=5.6459, Avg R@1=3.25%, I↔T=2.0%, I↔A=2.5%, T↔A=4.0%
+Epoch 5/20: Loss=5.6558, Avg R@1=4.75%, I↔T=3.5%, I↔A=4.5%, T↔A=5.0%
+Epoch 6/20: Loss=4.9331, Avg R@1=4.50%, I↔T=3.5%, I↔A=4.0%, T↔A=5.0%
+Epoch 7/20: Loss=4.6186, Avg R@1=4.42%, I↔T=4.0%, I↔A=5.0%, T↔A=3.5%
+Epoch 8/20: Loss=4.3485, Avg R@1=5.17%, I↔T=4.0%, I↔A=5.0%, T↔A=4.5%
+Epoch 9/20: Loss=4.1186, Avg R@1=4.67%, I↔T=4.0%, I↔A=5.5%, T↔A=5.0%
+Epoch 10/20: Loss=4.2174, Avg R@1=3.67%, I↔T=2.5%, I↔A=4.0%, T↔A=4.0%
+Epoch 11/20: Loss=4.3023, Avg R@1=5.00%, I↔T=4.5%, I↔A=5.0%, T↔A=4.5%
+Epoch 12/20: Loss=4.5989, Avg R@1=4.17%, I↔T=3.5%, I↔A=5.5%, T↔A=4.0%
+Epoch 13/20: Loss=4.5795, Avg R@1=3.92%, I↔T=3.5%, I↔A=3.5%, T↔A=4.5%
+Epoch 14/20: Loss=4.3385, Avg R@1=4.42%, I↔T=4.5%, I↔A=4.0%, T↔A=5.5%
+Epoch 15/20: Loss=4.4615, Avg R@1=4.58%, I↔T=5.5%, I↔A=3.5%, T↔A=4.5%
+Epoch 16/20: Loss=4.0866, Avg R@1=4.25%, I↔T=3.5%, I↔A=5.0%, T↔A=3.0%
+Epoch 17/20: Loss=4.1529, Avg R@1=4.42%, I↔T=3.0%, I↔A=5.5%, T↔A=4.0%
+Epoch 18/20: Loss=4.0770, Avg R@1=4.67%, I↔T=4.0%, I↔A=5.5%, T↔A=4.0%
+Epoch 19/20: Loss=4.2854, Avg R@1=3.92%, I↔T=2.5%, I↔A=4.0%, T↔A=3.5%
+Epoch 20/20: Loss=4.2567, Avg R@1=4.08%, I↔T=3.5%, I↔A=4.0%, T↔A=3.5%
+
+✅ Completed: Avg R@1=4.08% (best: 5.17% at epoch 8)
+
+================================================================================
+Testing: GDA2
+================================================================================
+
+Epoch 1/20: Loss=7.4338, Avg R@1=2.58%, I↔T=1.5%, I↔A=1.5%, T↔A=3.0%
+Epoch 2/20: Loss=6.2305, Avg R@1=2.75%, I↔T=1.5%, I↔A=1.5%, T↔A=5.0%
+Epoch 3/20: Loss=6.1595, Avg R@1=3.08%, I↔T=2.5%, I↔A=2.0%, T↔A=5.0%
+Epoch 4/20: Loss=5.6858, Avg R@1=3.25%, I↔T=3.0%, I↔A=2.5%, T↔A=4.5%
+Epoch 5/20: Loss=5.4553, Avg R@1=3.33%, I↔T=3.0%, I↔A=2.5%, T↔A=3.5%
+Epoch 6/20: Loss=5.2458, Avg R@1=4.50%, I↔T=3.5%, I↔A=4.5%, T↔A=5.0%
+Epoch 7/20: Loss=5.0782, Avg R@1=4.50%, I↔T=4.5%, I↔A=3.5%, T↔A=5.5%
+Epoch 8/20: Loss=4.4298, Avg R@1=4.42%, I↔T=4.0%, I↔A=4.5%, T↔A=4.0%
+Epoch 9/20: Loss=4.2531, Avg R@1=4.92%, I↔T=5.0%, I↔A=5.5%, T↔A=4.0%
+Epoch 10/20: Loss=4.0872, Avg R@1=4.67%, I↔T=4.5%, I↔A=6.0%, T↔A=3.5%
+Epoch 11/20: Loss=4.0293, Avg R@1=4.75%, I↔T=4.0%, I↔A=3.5%, T↔A=6.5%
+Epoch 12/20: Loss=3.9965, Avg R@1=5.00%, I↔T=5.0%, I↔A=4.5%, T↔A=4.5%
+Epoch 13/20: Loss=4.0764, Avg R@1=4.67%, I↔T=4.5%, I↔A=4.0%, T↔A=4.0%
+Epoch 14/20: Loss=5.2355, Avg R@1=3.67%, I↔T=3.0%, I↔A=4.5%, T↔A=3.0%
+Epoch 15/20: Loss=5.4945, Avg R@1=3.25%, I↔T=3.5%, I↔A=5.5%, T↔A=2.5%
+Epoch 16/20: Loss=5.1652, Avg R@1=4.17%, I↔T=3.5%, I↔A=5.0%, T↔A=3.5%
+Epoch 17/20: Loss=4.0031, Avg R@1=4.50%, I↔T=4.5%, I↔A=5.0%, T↔A=4.0%
+Epoch 18/20: Loss=3.8951, Avg R@1=5.08%, I↔T=4.5%, I↔A=5.5%, T↔A=5.5%
+Epoch 19/20: Loss=3.8594, Avg R@1=4.92%, I↔T=5.5%, I↔A=5.0%, T↔A=4.0%
+Epoch 20/20: Loss=4.0428, Avg R@1=4.33%, I↔T=4.5%, I↔A=5.0%, T↔A=3.0%
+
+✅ Completed: Avg R@1=4.33% (best: 5.08% at epoch 18)
+
+================================================================================
+RESULTS SUMMARY (sorted by final Avg R@1)
+================================================================================
+
+Optimizer                      Avg R@1      I↔T R@1    I↔A R@1    T↔A R@1    Time/Epoch   Status  
+----------------------------------------------------------------------------------------------------
+SGD                            5.33         5.00       4.50       4.50       0.8         s ✅       
+UniversalMuon (preserve)       5.00         4.50       5.50       5.00       1.3         s ✅       
+UniversalAndersonGDA           4.67         4.00       4.00       5.50       3.1         s ✅       
+Adam                           4.50         4.00       5.00       4.00       0.9         s ✅       
+AdamW                          4.33         4.00       4.00       4.00       0.8         s ✅       
+GDA2                           4.33         4.50       5.00       3.00       1.2         s ✅       
+CustomAdam                     4.08         3.50       4.00       3.50       1.0         s ✅       
+UniversalMuon (auto)           0.50         0.50       0.50       0.50       0.8         s ✅       
+
+================================================================================
+ANALYSIS
+================================================================================
+
+🥇 Best Overall: SGD
+   Final Avg R@1: 5.33%
+   Best Avg R@1: 6.00% (epoch 18)
+   Cross-modal: I↔T=5.0%, I↔A=4.5%, T↔A=4.5%
+
+⚡ Fastest: UniversalMuon (auto)
+   Time per epoch: 0.8s
+   Avg R@1: 0.50%
+
+🔒 Most Stable: AdamW
+   Final loss: 3.8587
+   Avg R@1: 4.33%
+
+📊 Best by Modality Pair:
+   I↔T: SGD (5.00%)
+   I↔A: UniversalMuon (preserve) (5.50%)
+   T↔A: UniversalAndersonGDA (5.50%)
+
+🌐 Universal Optimizers Performance:
+   UniversalMuon (preserve): 5.00% Avg R@1, 1.3s/epoch
+   UniversalAndersonGDA: 4.67% Avg R@1, 3.1s/epoch
+   UniversalMuon (auto): 0.50% Avg R@1, 0.8s/epoch
+
+✅ Converged: 7/8 optimizers
+
+💾 Results saved to: multimodal_optimizer_results.json
+
+================================================================================
+RECOMMENDATION
+================================================================================
+
+✅ Recommended: SGD
+   Achieves best cross-modal alignment (5.33% Avg R@1)
+
+================================================================================

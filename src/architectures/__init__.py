@@ -5,6 +5,7 @@ from .simple_cnn import SimpleCNN
 from .resnet import ResNet
 from .fc_net import FullyConnectedNet
 from .vision_transformer import VisionTransformer
+from .multimodal_memory import MultiModalMemoryNetwork, TestTimeMemory
 
 __all__ = [
     'BaseArchitecture',
@@ -12,4 +13,6 @@ __all__ = [
     'ResNet',
     'FullyConnectedNet',
     'VisionTransformer',
+    'MultiModalMemoryNetwork',
+    'TestTimeMemory',
 ]
