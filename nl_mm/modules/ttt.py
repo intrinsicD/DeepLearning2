@@ -1,8 +1,6 @@
 """Test-time training adapters implementing the L2 inner objective."""
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -11,12 +9,12 @@ import torch.nn.functional as F
 class TTTAdapter(nn.Module):
     """LoRA-style adapter updated via Eq. (28–29)."""
 
-    def __init__(self, d_model: int, rank: int = 16, eta: float = 1e-3):
+    def __init__(self, d_model: int, rank: int = 16, eta: float = 1e-3, max_steps: int = 2):
         super().__init__()
         self.inp = nn.Linear(d_model, rank, bias=False)
         self.out = nn.Linear(rank, d_model, bias=False)
         self.eta = eta
-        self.max_steps = 2
+        self.max_steps = max_steps
         self.register_buffer("_steps", torch.zeros(1, dtype=torch.long), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -44,7 +42,7 @@ class TTTAdapter(nn.Module):
         identity = torch.eye(gram.size(0), device=gram.device, dtype=gram.dtype)
         contraction = identity - gram / (gram.diagonal().mean() + 1e-6)
 
-        self.out.weight.mul_(contraction[: self.out.weight.size(0), : self.out.weight.size(1)])
+        self.inp.weight.copy_(self.inp.weight @ contraction)
         self.out.weight.add_(-self.eta * dW_out)
         self.inp.weight.add_(-self.eta * dW_in)
         self._steps += 1

@@ -1,10 +1,11 @@
-"""TorchScript/ONNX export helpers."""
+"""TorchScript export helpers."""
 from __future__ import annotations
 
 import argparse
 import torch
 
 from .models.nl_mm_model import NLMM
+from .utils import load_config
 
 
 def parse_args() -> argparse.Namespace:
@@ -12,19 +13,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=str, default="nl_mm/configs/tiny_single_gpu.yaml")
     parser.add_argument("--output", type=str, default="nl_mm_torchscript.pt")
     return parser.parse_args()
-
-
-def load_config(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as fh:
-        text = fh.read()
-    try:
-        import yaml  # type: ignore
-
-        return yaml.safe_load(text)
-    except ModuleNotFoundError:
-        import json
-
-        return json.loads(text)
 
 
 def export_model(cfg: dict, output: str) -> None:

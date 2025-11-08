@@ -11,6 +11,9 @@ class DMGD(torch.optim.Optimizer):
         defaults = dict(lr=lr, beta=beta, nonlinearity=nonlinearity)
         super().__init__(params, defaults)
         self.mlp = torch.nn.Sequential(torch.nn.Linear(1, 8), torch.nn.Tanh(), torch.nn.Linear(8, 1))
+        for param in self.mlp.parameters():
+            param.requires_grad_(False)
+        self._mlp_device: torch.device | None = None
 
     def _apply_nonlinearity(self, m: torch.Tensor, nonlinearity: str) -> torch.Tensor:
         if nonlinearity == "nsqrt":
@@ -30,6 +33,9 @@ class DMGD(torch.optim.Optimizer):
                 if p.grad is None:
                     continue
                 grad = p.grad
+                if self._mlp_device != grad.device:
+                    self.mlp.to(grad.device)
+                    self._mlp_device = grad.device
                 state = self.state[p]
                 if "momentum" not in state:
                     state["momentum"] = torch.zeros_like(p)

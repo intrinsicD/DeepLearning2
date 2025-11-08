@@ -5,25 +5,13 @@ import argparse
 import torch
 
 from .models.nl_mm_model import NLMM
+from .utils import load_config
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate the NL-MM model")
     parser.add_argument("--config", type=str, default="nl_mm/configs/tiny_single_gpu.yaml")
     return parser.parse_args()
-
-
-def load_config(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as fh:
-        text = fh.read()
-    try:
-        import yaml  # type: ignore
-
-        return yaml.safe_load(text)
-    except ModuleNotFoundError:
-        import json
-
-        return json.loads(text)
 
 
 def evaluate(cfg: dict) -> None:

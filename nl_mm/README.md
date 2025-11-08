@@ -19,8 +19,7 @@ the conceptual decomposition of the paper:
 
 ```
 nl_mm/
-  configs/          # YAML configuration files
-  data/             # Minimal multimodal dataset helpers
+  configs/          # JSON configuration files
   modules/          # Core Nested Learning components
   models/           # Encoders, decoders, and the NL-MM wrapper
   train.py          # Training entry point

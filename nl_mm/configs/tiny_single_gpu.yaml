@@ -19,5 +19,7 @@
   },
   "routing": {"small_param_min_dim": 16},
   "ttt": {"enable": true, "eta": 1.0e-3, "max_steps": 2, "adapter_rank": 16},
-  "precision": {"amp": "bf16", "grad_clip": 1.0}
+  "precision": {"amp": "bf16", "grad_clip": 1.0},
+  "max_position_embeddings": 1024,
+  "vocab_size": 32000
 }

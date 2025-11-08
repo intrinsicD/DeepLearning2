@@ -39,18 +39,33 @@ class TextEncoder(nn.Module):
         vocab = cfg.get("vocab_size", 32000)
         depth = cfg["depth"]["text"]
         self.token = nn.Embedding(vocab, d_model)
-        self.pos = nn.Parameter(torch.randn(1024, d_model) * 0.01)
+        max_pos = cfg.get("max_position_embeddings", 1024)
+        self.pos = nn.Parameter(torch.randn(max_pos, d_model) * 0.01)
         self.blocks = nn.ModuleList()
         for _ in range(depth):
             cms = ContinuumMLP(d_model, cfg["ffn_mult"], cfg["cms_levels"])
-            ttt = TTTAdapter(d_model, rank=cfg["ttt"]["adapter_rank"], eta=cfg["ttt"]["eta"]) if cfg["ttt"]["enable"] else None
+            ttt = (
+                TTTAdapter(
+                    d_model,
+                    rank=cfg["ttt"]["adapter_rank"],
+                    eta=cfg["ttt"]["eta"],
+                    max_steps=cfg["ttt"].get("max_steps", 2),
+                )
+                if cfg["ttt"]["enable"]
+                else None
+            )
             self.blocks.append(NLBlock(d_model, cfg["n_heads"], cms=cms, ttt=ttt))
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, tokens: torch.Tensor, state: Optional[list[NLBlockState]] = None, *, enable_ttt: bool = False) -> tuple[torch.Tensor, list[NLBlockState]]:
         if state is None:
             state = [NLBlockState() for _ in range(len(self.blocks))]
-        x = self.token(tokens) + self.pos[: tokens.size(1)]
+        seq_len = tokens.size(1)
+        if seq_len > self.pos.size(0):
+            raise ValueError(
+                f"Sequence length {seq_len} exceeds max_position_embeddings {self.pos.size(0)}"
+            )
+        x = self.token(tokens) + self.pos[:seq_len]
         new_state: list[NLBlockState] = []
         slow_state = x.mean(dim=1)
         for block, block_state in zip(self.blocks, state):
@@ -71,7 +86,16 @@ class VisionEncoder(nn.Module):
         self.blocks = nn.ModuleList()
         for _ in range(depth):
             cms = ContinuumMLP(d_model, cfg["ffn_mult"], cfg["cms_levels"])
-            ttt = TTTAdapter(d_model, rank=cfg["ttt"]["adapter_rank"], eta=cfg["ttt"]["eta"]) if cfg["ttt"]["enable"] else None
+            ttt = (
+                TTTAdapter(
+                    d_model,
+                    rank=cfg["ttt"]["adapter_rank"],
+                    eta=cfg["ttt"]["eta"],
+                    max_steps=cfg["ttt"].get("max_steps", 2),
+                )
+                if cfg["ttt"]["enable"]
+                else None
+            )
             self.blocks.append(NLBlock(d_model, cfg["n_heads"], cms=cms, ttt=ttt))
         self.norm = nn.LayerNorm(d_model)
 
@@ -100,7 +124,16 @@ class AudioEncoder(nn.Module):
         self.blocks = nn.ModuleList()
         for _ in range(depth):
             cms = ContinuumMLP(d_model, cfg["ffn_mult"], cfg["cms_levels"])
-            ttt = TTTAdapter(d_model, rank=cfg["ttt"]["adapter_rank"], eta=cfg["ttt"]["eta"]) if cfg["ttt"]["enable"] else None
+            ttt = (
+                TTTAdapter(
+                    d_model,
+                    rank=cfg["ttt"]["adapter_rank"],
+                    eta=cfg["ttt"]["eta"],
+                    max_steps=cfg["ttt"].get("max_steps", 2),
+                )
+                if cfg["ttt"]["enable"]
+                else None
+            )
             self.blocks.append(NLBlock(d_model, cfg["n_heads"], cms=cms, ttt=ttt))
         self.norm = nn.LayerNorm(d_model)
 

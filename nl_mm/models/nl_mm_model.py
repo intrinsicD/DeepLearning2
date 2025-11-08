@@ -96,6 +96,8 @@ class NLMM(nn.Module):
             stream = ModalityStream(audio_tokens)
             streams.append(stream)
             ordering.append(("audio", stream))
+        if not streams:
+            raise ValueError("Batch contains no supported modalities for fusion")
         latent, clm_state = fuse_modalities(streams, self.clm, state.clm)
         latent = self.cms(latent)
         state.clm = clm_state

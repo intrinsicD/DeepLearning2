@@ -1,7 +1,7 @@
 """Optimizer routing utilities."""
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, List, Tuple
+from typing import Callable, Dict, Iterable
 
 import torch
 from torch import nn
@@ -9,19 +9,6 @@ from torch import nn
 from .d_mgd import DMGD
 
 OptimizerFactory = Callable[[Iterable[nn.Parameter], float | None], torch.optim.Optimizer]
-
-
-def split_parameters(module: nn.Module, min_dim: int) -> Tuple[List[nn.Parameter], List[nn.Parameter]]:
-    dmgd_params: List[nn.Parameter] = []
-    adam_params: List[nn.Parameter] = []
-    for _, param in module.named_parameters():
-        if not param.requires_grad:
-            continue
-        if param.ndim > 1 and min(param.shape) >= min_dim:
-            dmgd_params.append(param)
-        else:
-            adam_params.append(param)
-    return dmgd_params, adam_params
 
 
 def build_optimizer_factories(cfg: Dict) -> Dict[str, OptimizerFactory]:
