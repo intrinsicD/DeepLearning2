@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import torch
 from torch import nn
+
+from ..utils_init import QKNorm
 
 
 @dataclass
@@ -25,7 +27,11 @@ class HOPEProjection(nn.Module):
         super().__init__()
         self.n_heads = n_heads
         hidden = max(d_model // 4, 16)
-        self.mlp = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, hidden), nn.GELU(), nn.Linear(hidden, 3 * n_heads))
+        self.mlp = nn.Sequential(
+            nn.Linear(d_model, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, 3 * n_heads),
+        )
 
     def forward(self, slow_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         params = self.mlp(slow_state)
@@ -53,9 +59,27 @@ class FastWeightLinearAttention(nn.Module):
 
         self.hope_projection = HOPEProjection(d_model, n_heads)
         self.out_proj = nn.Linear(d_model, d_model)
+        self.wo = self.out_proj
+        self.qk_norm: Optional[QKNorm] = None
+        self._state_init_hook: Optional[Callable[[torch.Tensor], None]] = None
 
     def init_state(self, batch: int, *, device: torch.device, dtype: torch.dtype) -> FastWeightState:
-        return FastWeightState.init(batch, self.n_heads, self.head_dim, device=device, dtype=dtype)
+        state = FastWeightState.init(batch, self.n_heads, self.head_dim, device=device, dtype=dtype)
+        if self._state_init_hook is not None:
+            self._state_init_hook(state.memory)
+        return state
+
+    def fast_state_init(self, fn: Callable[[torch.Tensor], None]) -> None:
+        """Register a hook that post-processes newly created fast-weight memory.
+
+        Args:
+            fn: Callable receiving the memory tensor in-place. The hook is
+                invoked whenever :meth:`init_state` creates a fresh memory
+                tensor (e.g., at the start of a sequence or when shape/device
+                changes). Typical usage zeroes the tensor or adds a small
+                diagonal bias for numerical stability.
+        """
+        self._state_init_hook = fn
 
     def _reshape(self, tensor: torch.Tensor) -> torch.Tensor:
         bsz, seq_len, _ = tensor.shape
@@ -89,7 +113,9 @@ class FastWeightLinearAttention(nn.Module):
             k = k * gamma_k[:, :, None, None]
             v = v * gamma_v[:, :, None, None]
 
-        if self.normalize:
+        if self.qk_norm is not None:
+            q, k = self.qk_norm(q, k)
+        elif self.normalize:
             q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
             k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
 

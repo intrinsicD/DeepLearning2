@@ -10,6 +10,7 @@ from torch import nn
 from ..modules.cms import ContinuumMLP
 from ..modules.fast_weights import FastWeightLinearAttention, FastWeightState
 from ..modules.ttt import TTTAdapter
+from ..utils_init import RMSNorm
 
 
 @dataclass
@@ -23,13 +24,19 @@ class NLBlock(nn.Module):
         self.fast_attn = FastWeightLinearAttention(d_model, n_heads)
         self.cms = cms
         self.ttt = ttt
+        self.attn_norm = RMSNorm(d_model)
+        self.ffn_norm = RMSNorm(d_model)
+        self.residual_alpha = 1.0
 
     def forward(self, x: torch.Tensor, state: NLBlockState, *, slow_state: Optional[torch.Tensor] = None, enable_ttt: bool = False) -> tuple[torch.Tensor, NLBlockState]:
+        residual = x
         y, fast_state = self.fast_attn(x, state.fast, slow_state=slow_state)
-        z = self.cms(y)
+        x = self.attn_norm(self.residual_alpha * residual + y)
+        z = self.cms(x)
+        x = self.ffn_norm(x + z)
         if enable_ttt and self.ttt is not None:
-            z = self.ttt(z)
-        return z, NLBlockState(fast=fast_state)
+            x = self.ttt(x)
+        return x, NLBlockState(fast=fast_state)
 
 
 class TextEncoder(nn.Module):
@@ -55,7 +62,7 @@ class TextEncoder(nn.Module):
                 else None
             )
             self.blocks.append(NLBlock(d_model, cfg["n_heads"], cms=cms, ttt=ttt))
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = RMSNorm(d_model)
 
     def forward(self, tokens: torch.Tensor, state: Optional[list[NLBlockState]] = None, *, enable_ttt: bool = False) -> tuple[torch.Tensor, list[NLBlockState]]:
         if state is None:
@@ -97,7 +104,7 @@ class VisionEncoder(nn.Module):
                 else None
             )
             self.blocks.append(NLBlock(d_model, cfg["n_heads"], cms=cms, ttt=ttt))
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = RMSNorm(d_model)
 
     def forward(self, images: torch.Tensor, state: Optional[list[NLBlockState]] = None, *, enable_ttt: bool = False) -> tuple[torch.Tensor, list[NLBlockState]]:
         if state is None:
@@ -120,7 +127,11 @@ class AudioEncoder(nn.Module):
         d_model = cfg["d_model"]
         depth = cfg["depth"]["audio"]
         in_chans = cfg.get("audio_channels", 1)
-        self.frontend = nn.Sequential(nn.Conv1d(in_chans, d_model // 2, kernel_size=3, padding=1), nn.GELU(), nn.Conv1d(d_model // 2, d_model, kernel_size=3, padding=1))
+        self.frontend = nn.Sequential(
+            nn.Conv1d(in_chans, d_model // 2, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv1d(d_model // 2, d_model, kernel_size=3, padding=1),
+        )
         self.blocks = nn.ModuleList()
         for _ in range(depth):
             cms = ContinuumMLP(d_model, cfg["ffn_mult"], cfg["cms_levels"])
@@ -135,7 +146,7 @@ class AudioEncoder(nn.Module):
                 else None
             )
             self.blocks.append(NLBlock(d_model, cfg["n_heads"], cms=cms, ttt=ttt))
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = RMSNorm(d_model)
 
     def forward(self, audio: torch.Tensor, state: Optional[list[NLBlockState]] = None, *, enable_ttt: bool = False) -> tuple[torch.Tensor, list[NLBlockState]]:
         if state is None:

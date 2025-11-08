@@ -99,7 +99,7 @@ class NLMM(nn.Module):
         if not streams:
             raise ValueError("Batch contains no supported modalities for fusion")
         latent, clm_state = fuse_modalities(streams, self.clm, state.clm)
-        latent = self.cms(latent)
+        latent = latent + self.cms(latent)
         state.clm = clm_state
 
         broadcast = broadcast_to_modalities(latent, streams)
