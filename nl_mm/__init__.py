@@ -7,7 +7,8 @@ modules are intentionally light-weight to keep the single-GPU training target
 easy to satisfy while also being amenable to future scaling via DDP/ZeRO.
 """
 
+from .init import apply_nlmm_init
 from .models.nl_mm_model import NLMM
 from .modules.nl_core import LevelSpec, NLScheduler
 
-__all__ = ["NLMM", "LevelSpec", "NLScheduler"]
+__all__ = ["NLMM", "LevelSpec", "NLScheduler", "apply_nlmm_init"]
