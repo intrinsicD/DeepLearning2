@@ -1,0 +1,25 @@
+{
+  "d_model": 512,
+  "n_heads": 8,
+  "ffn_mult": 4,
+  "L_mem": 32,
+  "depth": {
+    "text": 6,
+    "image": 6,
+    "audio": 6
+  },
+  "cms_levels": [
+    {"name": "fast", "chunk_size": 1, "lr": 2.0e-4, "optimizer": "dmgd"},
+    {"name": "mid", "chunk_size": 16, "lr": 1.0e-4, "optimizer": "dmgd"},
+    {"name": "slow", "chunk_size": 256, "lr": 5.0e-5, "optimizer": "dmgd"}
+  ],
+  "optimizer": {
+    "adamw": {"lr": 3.0e-4, "weight_decay": 0.01},
+    "dmgd": {"lr": 1.0e-3, "beta": 0.9, "nonlinearity": "nsqrt"}
+  },
+  "routing": {"small_param_min_dim": 16},
+  "ttt": {"enable": true, "eta": 1.0e-3, "max_steps": 2, "adapter_rank": 16},
+  "precision": {"amp": "bf16", "grad_clip": 1.0},
+  "max_position_embeddings": 1024,
+  "vocab_size": 32000
+}
