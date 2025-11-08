@@ -11,7 +11,7 @@ from ..modules.cms import ContinuumMLP
 from ..modules.fast_weights import FastWeightState
 from ..modules.fusion import CLMMemory, ModalityStream, broadcast_to_modalities, fuse_modalities
 from ..modules.nl_core import LevelSpec, NLScheduler, build_level_states
-from ..modules.optim.routing import build_optimizers
+from ..modules.optim.routing import build_optimizer_factories
 from .encoders import AudioEncoder, TextEncoder, VisionEncoder
 from .decoders import AudioDecoder, ImageDecoder, TextDecoder
 
@@ -40,10 +40,39 @@ class NLMM(nn.Module):
         self.aud_dec = AudioDecoder(cfg)
         self.nl_scheduler: Optional[NLScheduler] = None
 
+    def _gather_level_parameters(self, level_name: str) -> list[nn.Parameter]:
+        params: list[nn.Parameter] = []
+        for module in self.modules():
+            if isinstance(module, ContinuumMLP) and level_name in module.blocks:
+                params.extend(list(module.blocks[level_name].parameters()))
+        return params
+
     def configure_scheduler(self, cfg: Dict) -> NLScheduler:
-        optimizers = build_optimizers(self, cfg)
-        specs = [LevelSpec(**level, params=list(self.parameters())) for level in cfg["cms_levels"]]
-        level_states = build_level_states(specs, optimizers)
+        optimizer_factories = build_optimizer_factories(cfg)
+        assigned: set[int] = set()
+        specs: list[LevelSpec] = []
+        level_param_map: Dict[str, list[nn.Parameter]] = {}
+        for level in cfg["cms_levels"]:
+            params = self._gather_level_parameters(level["name"])
+            level_param_map[level["name"]] = params
+            for param in params:
+                assigned.add(id(param))
+
+        remaining = [p for p in self.parameters() if id(p) not in assigned]
+        if remaining:
+            fastest = min(cfg["cms_levels"], key=lambda spec: spec["chunk_size"])["name"]
+            level_param_map.setdefault(fastest, []).extend(remaining)
+
+        for level in cfg["cms_levels"]:
+            params = level_param_map.get(level["name"], [])
+            if not params:
+                continue
+            specs.append(LevelSpec(**level, params=params))
+
+        if not specs:
+            raise ValueError("No parameters were assigned to NL scheduler levels")
+
+        level_states = build_level_states(specs, optimizer_factories)
         self.nl_scheduler = NLScheduler(level_states)
         return self.nl_scheduler
 

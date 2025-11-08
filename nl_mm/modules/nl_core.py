@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Iterator, List, Optional
+from typing import Callable, Dict, Iterable, Iterator, List, Optional
 
 import torch
 
@@ -74,11 +74,17 @@ class NLScheduler:
         return list(self._level_states.keys())
 
 
-def build_level_states(level_specs: Iterable[LevelSpec], optimizers: Dict[str, torch.optim.Optimizer]) -> List[LevelState]:
+def build_level_states(
+    level_specs: Iterable[LevelSpec],
+    optimizer_factories: Dict[str, Callable[[Iterable[torch.nn.Parameter], Optional[float]], torch.optim.Optimizer]],
+) -> List[LevelState]:
     states: List[LevelState] = []
     for spec in level_specs:
-        if spec.optimizer not in optimizers:
+        if spec.optimizer not in optimizer_factories:
             raise KeyError(f"Optimizer {spec.optimizer} not provided for level {spec.name}")
-        opt = optimizers[spec.optimizer]
-        states.append(LevelState(spec, opt))
+        if not spec.params:
+            raise ValueError(f"Level {spec.name} has no parameters assigned")
+        factory = optimizer_factories[spec.optimizer]
+        optimizer = factory(spec.params, spec.lr)
+        states.append(LevelState(spec, optimizer))
     return states

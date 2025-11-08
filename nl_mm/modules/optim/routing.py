@@ -1,18 +1,20 @@
 """Optimizer routing utilities."""
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Tuple
+from typing import Callable, Dict, Iterable, List, Tuple
 
 import torch
 from torch import nn
 
 from .d_mgd import DMGD
 
+OptimizerFactory = Callable[[Iterable[nn.Parameter], float | None], torch.optim.Optimizer]
+
 
 def split_parameters(module: nn.Module, min_dim: int) -> Tuple[List[nn.Parameter], List[nn.Parameter]]:
     dmgd_params: List[nn.Parameter] = []
     adam_params: List[nn.Parameter] = []
-    for name, param in module.named_parameters():
+    for _, param in module.named_parameters():
         if not param.requires_grad:
             continue
         if param.ndim > 1 and min(param.shape) >= min_dim:
@@ -22,13 +24,38 @@ def split_parameters(module: nn.Module, min_dim: int) -> Tuple[List[nn.Parameter
     return dmgd_params, adam_params
 
 
-def build_optimizers(module: nn.Module, cfg: Dict) -> Dict[str, torch.optim.Optimizer]:
-    dmgd_params, adam_params = split_parameters(module, cfg["routing"]["small_param_min_dim"])
-    optimizers: Dict[str, torch.optim.Optimizer] = {}
-    if dmgd_params:
+def build_optimizer_factories(cfg: Dict) -> Dict[str, OptimizerFactory]:
+    """Return callables that instantiate optimizers on demand.
+
+    Each factory creates a new optimizer instance scoped to a level so that
+    slower levels can accumulate gradients without interference from faster
+    updates.
+    """
+
+    factories: Dict[str, OptimizerFactory] = {}
+
+    if "dmgd" in cfg.get("optimizer", {}):
         dm_cfg = cfg["optimizer"]["dmgd"]
-        optimizers["dmgd"] = DMGD(dmgd_params, lr=dm_cfg["lr"], beta=dm_cfg.get("beta", 0.9), nonlinearity=dm_cfg.get("nonlinearity", "none"))
-    if adam_params:
+
+        def make_dmgd(params: Iterable[nn.Parameter], override_lr: float | None = None) -> torch.optim.Optimizer:
+            params = list(params)
+            if not params:
+                raise ValueError("DMGD optimizer requires at least one parameter")
+            lr = override_lr if override_lr is not None else dm_cfg["lr"]
+            return DMGD(params, lr=lr, beta=dm_cfg.get("beta", 0.9), nonlinearity=dm_cfg.get("nonlinearity", "none"))
+
+        factories["dmgd"] = make_dmgd
+
+    if "adamw" in cfg.get("optimizer", {}):
         ad_cfg = cfg["optimizer"]["adamw"]
-        optimizers["adamw"] = torch.optim.AdamW(adam_params, lr=ad_cfg["lr"], weight_decay=ad_cfg.get("weight_decay", 0.0))
-    return optimizers
+
+        def make_adamw(params: Iterable[nn.Parameter], override_lr: float | None = None) -> torch.optim.Optimizer:
+            params = list(params)
+            if not params:
+                raise ValueError("AdamW optimizer requires at least one parameter")
+            lr = override_lr if override_lr is not None else ad_cfg["lr"]
+            return torch.optim.AdamW(params, lr=lr, weight_decay=ad_cfg.get("weight_decay", 0.0))
+
+        factories["adamw"] = make_adamw
+
+    return factories
