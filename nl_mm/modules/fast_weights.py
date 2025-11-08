@@ -61,8 +61,21 @@ class FastWeightLinearAttention(nn.Module):
         bsz, seq_len, _ = tensor.shape
         return tensor.view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
 
-    def forward(self, x: torch.Tensor, state: Optional[FastWeightState], *, slow_state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, FastWeightState]:
-        if state is None:
+    def _state_mismatch(self, state: FastWeightState, x: torch.Tensor) -> bool:
+        memory = state.memory
+        if memory.device != x.device or memory.dtype != x.dtype:
+            return True
+        expected_shape = (x.size(0), self.n_heads, self.head_dim, self.head_dim)
+        return memory.shape != expected_shape
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        state: Optional[FastWeightState],
+        *,
+        slow_state: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, FastWeightState]:
+        if state is None or self._state_mismatch(state, x):
             state = self.init_state(x.size(0), device=x.device, dtype=x.dtype)
         memory = state.memory.detach()
 
