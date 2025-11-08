@@ -1,7 +1,7 @@
 """Initialization entry point for NL-MM models."""
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 from torch import nn
 
@@ -33,10 +33,25 @@ def _resolve_stack(model: nn.Module, name: str) -> nn.Module | None:
     return None
 
 
-def apply_nlmm_init(model: nn.Module, arch_depths: Dict[str, int], arch_kind: str) -> nn.Module:
-    """Apply the NL-MM initialization recipe in-place."""
+def apply_nlmm_init(
+    model: nn.Module,
+    arch_depths: Dict[str, int],
+    arch_kind: str,
+    *,
+    seed: Optional[int] = 1337,
+) -> nn.Module:
+    """Apply the NL-MM initialization recipe in-place.
 
-    set_global_seed(1337)
+    Args:
+        model: Root module to initialize in-place.
+        arch_depths: Mapping of stack name to depth for DeepNorm constants.
+        arch_kind: Architecture category used for DeepNorm constants.
+        seed: Optional seed to make initialization reproducible. Pass ``None``
+            to skip altering the global RNG state.
+    """
+
+    if seed is not None:
+        set_global_seed(seed)
     convert_layernorm_to_rmsnorm(model)
     insert_qk_norm_in_attention_modules(model)
 

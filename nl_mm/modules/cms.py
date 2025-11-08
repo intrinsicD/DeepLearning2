@@ -23,8 +23,10 @@ class ContinuumMLP(nn.Module):
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        update = torch.zeros_like(x)
-        for level in self.levels:
-            block = self.blocks[level["name"]]
-            update = update + block(x)
+        outputs = [self.blocks[level["name"]](x) for level in self.levels]
+        if not outputs:
+            return torch.zeros_like(x)
+        update = outputs[0]
+        for contribution in outputs[1:]:
+            update = update + contribution
         return update

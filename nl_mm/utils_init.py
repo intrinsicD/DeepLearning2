@@ -1,9 +1,8 @@
 """Initialization helpers for the NL-MM architecture."""
 from __future__ import annotations
 
-import math
 import random
-from typing import Callable, Iterable, Iterator
+from typing import Iterator
 
 import numpy as np
 import torch
@@ -89,6 +88,22 @@ def replace_module(root: nn.Module, dotted_name: str, new_module: nn.Module) -> 
 
 
 def convert_layernorm_to_rmsnorm(root: nn.Module, eps: float = 1e-6) -> None:
+    default_param = next(root.parameters(), None)
+    default_buffer = next(root.buffers(), None)
+    default_device = (
+        default_param.device
+        if default_param is not None
+        else default_buffer.device
+        if default_buffer is not None
+        else torch.device("cpu")
+    )
+    default_dtype = (
+        default_param.dtype
+        if default_param is not None
+        else default_buffer.dtype
+        if default_buffer is not None
+        else torch.float32
+    )
     for name, module in list(root.named_modules())[::-1]:
         if not name:
             continue
@@ -100,8 +115,30 @@ def convert_layernorm_to_rmsnorm(root: nn.Module, eps: float = 1e-6) -> None:
                 dim = int(normalized_shape[-1])
             else:
                 dim = int(normalized_shape)
-            rms = RMSNorm(dim, eps=eps)
-            rms.weight.data.copy_(module.weight.data)
+            weight = getattr(module, "weight", None)
+            param = next(module.parameters(), None)
+            buffer = next(module.buffers(), None)
+            device = (
+                weight.device
+                if weight is not None
+                else param.device
+                if param is not None
+                else buffer.device
+                if buffer is not None
+                else default_device
+            )
+            dtype = (
+                weight.dtype
+                if weight is not None
+                else param.dtype
+                if param is not None
+                else buffer.dtype
+                if buffer is not None
+                else default_dtype
+            )
+            rms = RMSNorm(dim, eps=eps).to(device=device, dtype=dtype)
+            if weight is not None:
+                rms.weight.data.copy_(weight.data)
             replace_module(root, name, rms)
 
 
@@ -110,24 +147,22 @@ def insert_qk_norm_in_attention_modules(root: nn.Module, eps: float = 1e-6) -> N
         if hasattr(module, "wq") and hasattr(module, "wk") and hasattr(module, "n_heads"):
             d_model = module.wq.out_features
             d_head = d_model // module.n_heads
-            qk_norm = QKNorm(d_head, eps=eps)
+            qk_norm = QKNorm(d_head, eps=eps).to(
+                device=module.wq.weight.device,
+                dtype=module.wq.weight.dtype,
+            )
             module.qk_norm = qk_norm  # type: ignore[attr-defined]
 
 
 def deepnorm_constants(depth: int, arch_kind: str) -> tuple[float, float]:
     if depth <= 0:
         raise ValueError("depth must be positive for DeepNorm")
-    if arch_kind == "encoder":
-        alpha = (2 * depth) ** 0.25
-        beta = (8 * depth) ** -0.25
-    elif arch_kind == "decoder":
-        alpha = (2 * depth) ** 0.25
-        beta = (8 * depth) ** -0.25
-    elif arch_kind == "encdec":
-        alpha = (2 * depth) ** 0.25
-        beta = (8 * depth) ** -0.25
-    else:
+    if arch_kind not in {"encoder", "decoder", "encdec"}:
         raise ValueError("arch_kind must be one of {'encoder', 'decoder', 'encdec'}")
+    # Current stacks share the same constants; distinct formulas for encoder/decoder
+    # can be introduced here when the architecture diverges.
+    alpha = (2 * depth) ** 0.25
+    beta = (8 * depth) ** -0.25
     return alpha, beta
 
 

@@ -29,10 +29,11 @@ class NLBlock(nn.Module):
         self.residual_alpha = 1.0
 
     def forward(self, x: torch.Tensor, state: NLBlockState, *, slow_state: Optional[torch.Tensor] = None, enable_ttt: bool = False) -> tuple[torch.Tensor, NLBlockState]:
+        residual = x
         y, fast_state = self.fast_attn(x, state.fast, slow_state=slow_state)
-        x = self.attn_norm(self.residual_alpha * x + y)
+        x = self.attn_norm(self.residual_alpha * residual + y)
         z = self.cms(x)
-        x = self.ffn_norm(self.residual_alpha * x + z)
+        x = self.ffn_norm(x + z)
         if enable_ttt and self.ttt is not None:
             x = self.ttt(x)
         return x, NLBlockState(fast=fast_state)

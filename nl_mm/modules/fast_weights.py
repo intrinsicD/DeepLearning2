@@ -70,8 +70,15 @@ class FastWeightLinearAttention(nn.Module):
         return state
 
     def fast_state_init(self, fn: Callable[[torch.Tensor], None]) -> None:
-        """Register a hook applied to freshly initialized fast-weight memory."""
+        """Register a hook that post-processes newly created fast-weight memory.
 
+        Args:
+            fn: Callable receiving the memory tensor in-place. The hook is
+                invoked whenever :meth:`init_state` creates a fresh memory
+                tensor (e.g., at the start of a sequence or when shape/device
+                changes). Typical usage zeroes the tensor or adds a small
+                diagonal bias for numerical stability.
+        """
         self._state_init_hook = fn
 
     def _reshape(self, tensor: torch.Tensor) -> torch.Tensor:
