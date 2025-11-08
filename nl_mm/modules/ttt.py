@@ -36,7 +36,7 @@ class TTTAdapter(nn.Module):
         hidden_grad = grad_out @ self.out.weight
         gelu_grad = hidden_grad * torch.sigmoid(1.702 * proj)  # derivative approximation
         dW_out = torch.einsum("bo,bi->oi", grad_out, F.gelu(proj)) / max(1, x_flat.size(0))
-        dW_in = torch.einsum("bo,bi->ob", gelu_grad, x_flat) / max(1, x_flat.size(0))
+        dW_in = gelu_grad.t() @ x_flat / max(1, x_flat.size(0))
 
         gram = x_flat.t() @ x_flat
         identity = torch.eye(gram.size(0), device=gram.device, dtype=gram.dtype)
