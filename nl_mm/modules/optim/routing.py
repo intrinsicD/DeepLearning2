@@ -29,7 +29,14 @@ def build_optimizer_factories(cfg: Dict) -> Dict[str, OptimizerFactory]:
             if not params:
                 raise ValueError("DMGD optimizer requires at least one parameter")
             lr = override_lr if override_lr is not None else dm_cfg["lr"]
-            return DMGD(params, lr=lr, beta=dm_cfg.get("beta", 0.9), nonlinearity=dm_cfg.get("nonlinearity", "none"))
+            return DMGD(
+                params,
+                lr=lr,
+                beta=dm_cfg.get("beta", 0.9),
+                nonlinearity=dm_cfg.get("nonlinearity", "none"),
+                learnable_modulation=dm_cfg.get("learnable_modulation", True),
+                mlp_lr=dm_cfg.get("mlp_lr", 1e-2),
+            )
 
         factories["dmgd"] = make_dmgd
 
