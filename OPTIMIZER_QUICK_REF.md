@@ -1,0 +1,74 @@
+# 🎯 Optimizer Test - Quick Commands
+
+## Copy-Paste Commands
+
+### ⚡ Quick Test (15 min) - RECOMMENDED
+```bash
+python test_nl_mm_optimizers.py \
+    --config nl_mm/configs/nano_8gb.yaml \
+    --data_dir ./flickr8k \
+    --epochs 5 \
+    --batch_size 8 \
+    --subset 5000 \
+    --optimizers adam,adamw
+```
+
+### 📊 Medium Test (45 min) - More Accurate
+```bash
+python test_nl_mm_optimizers.py \
+    --config nl_mm/configs/nano_8gb.yaml \
+    --data_dir ./flickr8k \
+    --epochs 10 \
+    --batch_size 8 \
+    --subset 10000
+```
+
+### 🔬 Full Test (2-3 hours) - Most Accurate
+```bash
+python test_nl_mm_optimizers.py \
+    --config nl_mm/configs/nano_8gb.yaml \
+    --data_dir ./flickr8k \
+    --epochs 15 \
+    --batch_size 8 \
+    --subset 0
+```
+
+### 🚀 Skip Test & Train Directly
+```bash
+python train_nlmm_flickr8k.py \
+    --config nl_mm/configs/nano_8gb.yaml \
+    --data_dir ./flickr8k \
+    --epochs 30 \
+    --batch_size 8
+```
+
+---
+
+## View Results
+
+### After test completes:
+```bash
+# View plot
+xdg-open outputs/optimizer_comparison/optimizer_comparison.png
+
+# View JSON
+cat outputs/optimizer_comparison/optimizer_comparison.json | jq
+```
+
+---
+
+## What Each Optimizer Means
+
+| Optimizer | Speed | Quality | Memory | Best For |
+|-----------|-------|---------|--------|----------|
+| Adam | Medium | ⭐⭐⭐⭐ | High | Baseline |
+| **AdamW** | Medium | ⭐⭐⭐⭐⭐ | High | **Best overall** |
+| SGD | Fast | ⭐⭐⭐ | Low | Memory-limited |
+| RMSprop | Medium | ⭐⭐⭐⭐ | Medium | Alternative |
+
+**Prediction:** AdamW will win! 🏆
+
+---
+
+**Just run the first command to get started!** 🚀
+

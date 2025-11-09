@@ -1,0 +1,504 @@
+"""Train NL-MM (Nested Learning Multimodal) on Flickr8k dataset.
+
+This script integrates the core nl_mm architecture with the Flickr8k+FACC dataset
+for tri-modal learning (text + images + audio). Uses contrastive learning for
+cross-modal alignment.
+"""
+
+import argparse
+import json
+from pathlib import Path
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torch.amp import autocast, GradScaler
+from tqdm import tqdm
+import time
+
+from nl_mm.models.nl_mm_model import NLMM
+from nl_mm.utils import load_config
+from nl_mm.init import apply_nlmm_init
+from src.utils.flickr8k_dataset import Flickr8kAudioDataset, collate_fn
+from src.utils import get_device
+
+from torch.utils.tensorboard import SummaryWriter
+
+def info_nce_loss(query: torch.Tensor, key: torch.Tensor, temperature: float = 0.07) -> torch.Tensor:
+    """CLIP-style InfoNCE contrastive loss."""
+    if query is None or key is None:
+        return None
+    query = F.normalize(query, dim=-1)
+    key = F.normalize(key, dim=-1)
+    logits = torch.matmul(query, key.T) / temperature
+    labels = torch.arange(len(query), device=query.device)
+    loss_q2k = F.cross_entropy(logits, labels)
+    loss_k2q = F.cross_entropy(logits.T, labels)
+    return (loss_q2k + loss_k2q) / 2
+
+
+class MetricsTracker:
+    """Track and visualize training metrics."""
+
+    def __init__(self, save_dir: Path):
+        self.save_dir = Path(save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.metrics = {
+            'epoch': [],
+            'train_loss': [],
+            'train_i2t': [],
+            'train_i2a': [],
+            'train_t2a': [],
+            'val_i2t_r1': [],
+            'val_t2i_r1': [],
+            'val_i2a_r1': [],
+            'learning_rate': [],
+        }
+
+    def add(self, **kwargs):
+        for key, value in kwargs.items():
+            if key in self.metrics:
+                self.metrics[key].append(value)
+
+    def save(self):
+        """Save metrics to JSON."""
+        with open(self.save_dir / 'metrics.json', 'w') as f:
+            json.dump(self.metrics, f, indent=2)
+
+    def plot(self):
+        """Generate training plots."""
+        try:
+            import matplotlib.pyplot as plt
+
+            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+            epochs = self.metrics['epoch']
+
+            # Training losses
+            axes[0, 0].plot(epochs, self.metrics['train_loss'], 'b-', linewidth=2)
+            axes[0, 0].set_xlabel('Epoch')
+            axes[0, 0].set_ylabel('Loss')
+            axes[0, 0].set_title('Training Loss')
+            axes[0, 0].grid(True, alpha=0.3)
+
+            # Per-modality losses
+            axes[0, 1].plot(epochs, self.metrics['train_i2t'], label='Image↔Text', linewidth=2)
+            axes[0, 1].plot(epochs, self.metrics['train_i2a'], label='Image↔Audio', linewidth=2)
+            axes[0, 1].plot(epochs, self.metrics['train_t2a'], label='Text↔Audio', linewidth=2)
+            axes[0, 1].set_xlabel('Epoch')
+            axes[0, 1].set_ylabel('Loss')
+            axes[0, 1].set_title('Contrastive Losses by Modality')
+            axes[0, 1].legend()
+            axes[0, 1].grid(True, alpha=0.3)
+
+            # Retrieval metrics
+            axes[1, 0].plot(epochs, self.metrics['val_i2t_r1'], 'o-', label='Image→Text', linewidth=2)
+            axes[1, 0].plot(epochs, self.metrics['val_t2i_r1'], 's-', label='Text→Image', linewidth=2)
+            axes[1, 0].plot(epochs, self.metrics['val_i2a_r1'], '^-', label='Image→Audio', linewidth=2)
+            axes[1, 0].set_xlabel('Epoch')
+            axes[1, 0].set_ylabel('Recall@1 (%)')
+            axes[1, 0].set_title('Cross-Modal Retrieval Performance')
+            axes[1, 0].legend()
+            axes[1, 0].grid(True, alpha=0.3)
+
+            # Learning rate
+            if self.metrics['learning_rate']:
+                axes[1, 1].plot(epochs, self.metrics['learning_rate'], 'g-', linewidth=2)
+                axes[1, 1].set_xlabel('Epoch')
+                axes[1, 1].set_ylabel('Learning Rate')
+                axes[1, 1].set_title('Learning Rate Schedule')
+                axes[1, 1].set_yscale('log')
+                axes[1, 1].grid(True, alpha=0.3)
+
+            plt.tight_layout()
+            plt.savefig(self.save_dir / 'training_progress.png', dpi=150)
+            print(f"📊 Saved plot to {self.save_dir / 'training_progress.png'}")
+            plt.close()
+        except ImportError:
+            print("⚠️  matplotlib not installed, skipping plots")
+
+
+def train_epoch(model, dataloader, scheduler, scaler, device, epoch, args):
+    """Train for one epoch."""
+    model.train()
+
+    total_loss = 0
+    total_i2t = 0
+    total_i2a = 0
+    total_t2a = 0
+
+    pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
+
+    for step, batch in enumerate(pbar):
+        # Prepare batch in nl_mm format
+        # Audio needs to be reshaped from (B, 1, n_mels, time) to (B, 1, n_mels*time)
+        audio = batch['audio'].to(device)
+        B, C, n_mels, time = audio.shape
+        audio_flat = audio.reshape(B, C, n_mels * time)
+
+        nl_batch = {
+            "text": batch['text'].to(device),
+            "image": batch['images'].to(device),
+            "audio": audio_flat,
+            "text_target": batch['text'].to(device),  # For language modeling loss
+        }
+
+        # Forward pass with AMP - get both losses and embeddings
+        with autocast(device_type='cuda', enabled=args.use_amp, dtype=torch.bfloat16 if args.use_amp else torch.float32):
+            outputs, state = model(nl_batch, enable_ttt=False, return_embeddings=True)
+
+            # Compute contrastive losses if embeddings available
+            if "embeddings" in outputs:
+                embeddings = outputs["embeddings"]
+                loss_i2t = info_nce_loss(embeddings.get("image"), embeddings.get("text"))
+                loss_i2a = info_nce_loss(embeddings.get("image"), embeddings.get("audio"))
+                loss_t2a = info_nce_loss(embeddings.get("text"), embeddings.get("audio"))
+
+                # Start with reconstruction loss (if any)
+                loss = outputs.get("text", torch.tensor(0.0, device=device))
+
+                # Add contrastive losses
+                if loss_i2t is not None:
+                    loss = loss + 0.5 * loss_i2t
+                    total_i2t += loss_i2t.item()
+                if loss_i2a is not None:
+                    loss = loss + 0.5 * loss_i2a
+                    total_i2a += loss_i2a.item()
+                if loss_t2a is not None:
+                    loss = loss + 0.5 * loss_t2a
+                    total_t2a += loss_t2a.item()
+            else:
+                # Fallback to just reconstruction loss
+                loss = outputs.get("text", torch.tensor(0.0, device=device))
+
+            # Scale loss for gradient accumulation
+            if args.accumulation_steps > 1:
+                loss = loss / args.accumulation_steps
+
+        # Backward pass
+        scaler.scale(loss).backward()
+
+        # Gradient accumulation
+        if (step + 1) % args.accumulation_steps == 0:
+            # Gradient clipping - unscale each optimizer in the NL scheduler
+            for level_state in scheduler._level_states.values():
+                scaler.unscale_(level_state.optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.max_grad_norm)
+
+            # Optimizer step using NL scheduler
+            global_step = epoch * len(dataloader) + step
+            scheduler.step_all(global_step)
+
+            scaler.update()
+
+            # Zero gradients after update
+            for level_state in scheduler._level_states.values():
+                level_state.optimizer.zero_grad(set_to_none=True)
+
+        # Accumulate stats
+        total_loss += loss.item() * args.accumulation_steps
+
+        # Update progress bar
+        pbar.set_postfix({
+            'loss': f'{loss.item() * args.accumulation_steps:.4f}',
+        })
+
+
+
+    n = len(dataloader)
+    return {
+        'loss': total_loss / n,
+        'i2t_loss': total_i2t / n if total_i2t > 0 else 0,
+        'i2a_loss': total_i2a / n if total_i2a > 0 else 0,
+        't2a_loss': total_t2a / n if total_t2a > 0 else 0,
+    }
+
+
+@torch.no_grad()
+def evaluate(model, dataloader, device, enable_ttt=False):
+    """Evaluate cross-modal retrieval."""
+    model.eval()
+
+    # Collect all embeddings
+    print("  Evaluation: Collecting embeddings...")
+
+    all_text_embs = []
+    all_image_embs = []
+    all_audio_embs = []
+
+    for batch in tqdm(dataloader, desc="Evaluating", leave=False):
+        # Reshape audio from (B, 1, n_mels, time) to (B, 1, n_mels*time)
+        audio = batch['audio'].to(device)
+        B, C, n_mels, time = audio.shape
+        audio_flat = audio.reshape(B, C, n_mels * time)
+
+        nl_batch = {
+            "text": batch['text'].to(device),
+            "image": batch['images'].to(device),
+            "audio": audio_flat,
+        }
+
+        # Forward pass to get embeddings
+        outputs, state = model(nl_batch, enable_ttt=enable_ttt, return_embeddings=True)
+
+        if "embeddings" in outputs:
+            embeddings = outputs["embeddings"]
+            if "text" in embeddings:
+                all_text_embs.append(embeddings["text"])
+            if "image" in embeddings:
+                all_image_embs.append(embeddings["image"])
+            if "audio" in embeddings:
+                all_audio_embs.append(embeddings["audio"])
+
+    # Compute retrieval metrics
+    if all_text_embs and all_image_embs:
+        text_embs = F.normalize(torch.cat(all_text_embs), dim=-1)
+        image_embs = F.normalize(torch.cat(all_image_embs), dim=-1)
+        audio_embs = F.normalize(torch.cat(all_audio_embs), dim=-1) if all_audio_embs else None
+
+        # Compute recall@1
+        def compute_r1(query, keys):
+            sim = torch.matmul(query, keys.T)
+            ranks = torch.argsort(sim, dim=1, descending=True)
+            gt = torch.arange(len(query), device=query.device)
+            correct = (ranks[:, 0] == gt).float().mean().item() * 100
+            return correct
+
+        metrics = {
+            'i2t_r1': compute_r1(image_embs, text_embs),
+            't2i_r1': compute_r1(text_embs, image_embs),
+            'i2a_r1': compute_r1(image_embs, audio_embs) if audio_embs is not None else 0.0,
+        }
+    else:
+        # No embeddings collected
+        metrics = {
+            'i2t_r1': 0.0,
+            't2i_r1': 0.0,
+            'i2a_r1': 0.0,
+        }
+
+    return metrics
+
+
+def main(args):
+    device = get_device()
+    print(f"🚀 Training NL-MM on Flickr8k")
+    print(f"   Device: {device}")
+    print(f"   Config: {args.config}")
+
+    # Load configuration
+    cfg = load_config(args.config)
+
+    # Override with command-line args
+    if args.batch_size:
+        cfg['batch_size'] = args.batch_size
+    if args.lr:
+        if 'optimizer' not in cfg:
+            cfg['optimizer'] = {}
+        if 'adamw' not in cfg['optimizer']:
+            cfg['optimizer']['adamw'] = {}
+        cfg['optimizer']['adamw']['lr'] = args.lr
+
+    print(f"\n📊 Configuration:")
+    print(f"   Model dim: {cfg['d_model']}")
+    print(f"   Heads: {cfg['n_heads']}")
+    print(f"   Memory length: {cfg['L_mem']}")
+    print(f"   Batch size: {cfg.get('batch_size', args.batch_size)}")
+
+    # Create datasets
+    print("\n📂 Loading datasets...")
+    train_dataset = Flickr8kAudioDataset(
+        root_dir=args.data_dir,
+        split='train',
+        image_size=args.image_size,
+        audio_sample_rate=16000,
+        n_mels=80,
+        text_max_len=77,
+    )
+
+    val_dataset = Flickr8kAudioDataset(
+        root_dir=args.data_dir,
+        split='val',
+        image_size=args.image_size,
+        audio_sample_rate=16000,
+        n_mels=80,
+        text_max_len=77,
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        collate_fn=collate_fn,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        collate_fn=collate_fn,
+    )
+
+    print(f"   Train samples: {len(train_dataset)}")
+    print(f"   Val samples: {len(val_dataset)}")
+
+    # Create model
+    print("\n🏗️  Creating NL-MM model...")
+    model = NLMM(cfg).to(device)
+    apply_nlmm_init(model, cfg.get("depth", {}), cfg.get("arch_kind", "encoder"))
+
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"   Total parameters: {total_params:,}")
+    print(f"   Trainable parameters: {trainable_params:,}")
+
+    # Configure NL scheduler
+    print("\n⚙️  Configuring Nested Learning scheduler...")
+    scheduler = model.configure_scheduler(cfg)
+
+    # Create gradient scaler for AMP
+    from torch.amp import GradScaler
+    scaler = GradScaler(device='cuda', enabled=args.use_amp)
+
+    # Metrics tracker
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tracker = MetricsTracker(output_dir)
+
+    # Training loop
+    print(f"\n🏋️  Training for {args.epochs} epochs...")
+    best_metric = 0.0
+    start_time = time.time()
+
+    for epoch in range(1, args.epochs + 1):
+        print(f"\n{'='*60}")
+        print(f"Epoch {epoch}/{args.epochs}")
+        print(f"{'='*60}")
+
+        # Train
+        train_metrics = train_epoch(
+            model, train_loader, scheduler, scaler, device, epoch, args
+        )
+
+        print(f"\n📈 Training metrics:")
+        print(f"   Loss: {train_metrics['loss']:.4f}")
+        if train_metrics['i2t_loss'] > 0:
+            print(f"   Image↔Text: {train_metrics['i2t_loss']:.4f}")
+            print(f"   Image↔Audio: {train_metrics['i2a_loss']:.4f}")
+            print(f"   Text↔Audio: {train_metrics['t2a_loss']:.4f}")
+
+        # Evaluate every N epochs
+        if epoch % args.eval_every == 0:
+            print(f"\n🔍 Evaluating...")
+            val_metrics = evaluate(model, val_loader, device, enable_ttt=args.enable_ttt)
+
+            print(f"   Image→Text R@1: {val_metrics['i2t_r1']:.2f}%")
+            print(f"   Text→Image R@1: {val_metrics['t2i_r1']:.2f}%")
+            print(f"   Image→Audio R@1: {val_metrics['i2a_r1']:.2f}%")
+
+            # Track metrics
+            tracker.add(
+                epoch=epoch,
+                train_loss=train_metrics['loss'],
+                train_i2t=train_metrics['i2t_loss'],
+                train_i2a=train_metrics['i2a_loss'],
+                train_t2a=train_metrics['t2a_loss'],
+                val_i2t_r1=val_metrics['i2t_r1'],
+                val_t2i_r1=val_metrics['t2i_r1'],
+                val_i2a_r1=val_metrics['i2a_r1'],
+                learning_rate=cfg['optimizer']['adamw']['lr'],
+            )
+
+            # Save best model
+            avg_metric = (val_metrics['i2t_r1'] + val_metrics['t2i_r1']) / 2
+            if avg_metric > best_metric:
+                best_metric = avg_metric
+                checkpoint = {
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'config': cfg,
+                    'metrics': val_metrics,
+                }
+                torch.save(checkpoint, output_dir / 'best_nlmm_model.pt')
+                print(f"   💾 Saved best model (avg R@1: {avg_metric:.2f}%)")
+
+        # Save checkpoint every N epochs
+        if epoch % args.save_every == 0:
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'config': cfg,
+            }
+            torch.save(checkpoint, output_dir / f'nlmm_epoch_{epoch}.pt')
+            print(f"   💾 Saved checkpoint at epoch {epoch}")
+
+        # Plot progress
+        if epoch % args.plot_every == 0:
+            tracker.save()
+            tracker.plot()
+
+    # Final save
+    elapsed = time.time() - start_time
+    print(f"\n{'='*60}")
+    print(f"✅ Training complete!")
+    print(f"   Total time: {elapsed/3600:.2f} hours")
+    print(f"   Best avg R@1: {best_metric:.2f}%")
+    print(f"   Outputs saved to: {output_dir}")
+    print(f"{'='*60}\n")
+
+    tracker.save()
+    tracker.plot()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train NL-MM on Flickr8k")
+
+    # Data
+    parser.add_argument("--data_dir", type=str, default="./flickr8k",
+                        help="Path to Flickr8k dataset")
+    parser.add_argument("--image_size", type=int, default=224,
+                        help="Image size (square)")
+
+    # Model
+    parser.add_argument("--config", type=str, default="nl_mm/configs/tiny_single_gpu.yaml",
+                        help="Path to nl_mm config file")
+
+    # Training
+    parser.add_argument("--epochs", type=int, default=30,
+                        help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=32,
+                        help="Batch size")
+    parser.add_argument("--lr", type=float, default=None,
+                        help="Learning rate (overrides config)")
+    parser.add_argument("--use_amp", action="store_true", default=True,
+                        help="Use automatic mixed precision")
+    parser.add_argument("--max_grad_norm", type=float, default=1.0,
+                        help="Max gradient norm for clipping")
+    parser.add_argument("--accumulation_steps", type=int, default=1,
+                        help="Gradient accumulation steps")
+
+    # Test-time training
+    parser.add_argument("--enable_ttt", action="store_true",
+                        help="Enable test-time training during eval")
+
+    # Logging
+    parser.add_argument("--output_dir", type=str, default="./outputs/nlmm_flickr8k",
+                        help="Output directory for checkpoints and logs")
+    parser.add_argument("--eval_every", type=int, default=5,
+                        help="Evaluate every N epochs")
+    parser.add_argument("--save_every", type=int, default=10,
+                        help="Save checkpoint every N epochs")
+    parser.add_argument("--plot_every", type=int, default=5,
+                        help="Generate plots every N epochs")
+
+    # System
+    parser.add_argument("--num_workers", type=int, default=4,
+                        help="Number of data loader workers")
+
+    args = parser.parse_args()
+    main(args)
+

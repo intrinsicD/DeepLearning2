@@ -1,0 +1,29 @@
+{
+  "d_model": 192,
+  "n_heads": 6,
+  "ffn_mult": 3,
+  "L_mem": 16,
+  "depth": {
+    "text": 2,
+    "image": 2,
+    "audio": 2
+  },
+  "cms_levels": [
+    {"name": "fast", "chunk_size": 1, "lr": 2.0e-4, "optimizer": "adamw"},
+    {"name": "mid", "chunk_size": 16, "lr": 1.0e-4, "optimizer": "adamw"}
+  ],
+  "optimizer": {
+    "adamw": {"lr": 3.0e-4, "weight_decay": 0.01}
+  },
+  "routing": {"small_param_min_dim": 16},
+  "ttt": {"enable": false, "eta": 1.0e-3, "max_steps": 2, "adapter_rank": 8},
+  "precision": {"amp": "bf16", "grad_clip": 1.0},
+  "max_position_embeddings": 1024,
+  "vocab_size": 32000,
+  "patch_size": 16,
+  "image_channels": 3,
+  "audio_channels": 1,
+  "audio_mel_bins": 80,
+  "image_resolution": 64
+}
+
