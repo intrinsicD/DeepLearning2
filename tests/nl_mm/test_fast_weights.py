@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from nl_mm.modules.fast_weights import FastWeightLinearAttention, FastWeightState
+from modules.nl_mm.modules.fast_weights import FastWeightLinearAttention, FastWeightState
 
 
 def test_fast_weight_state_reinitializes_for_batch_mismatch():

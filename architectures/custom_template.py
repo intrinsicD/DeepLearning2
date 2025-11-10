@@ -6,7 +6,7 @@ Copy this file and modify it to create your own custom architecture.
 
 import torch.nn as nn
 import torch.nn.functional as F
-from src.architectures.base import BaseArchitecture
+from architectures.base import BaseArchitecture
 
 
 class CustomArchitectureTemplate(BaseArchitecture):

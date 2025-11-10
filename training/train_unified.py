@@ -13,7 +13,7 @@ from utils.metrics import text_loss_metric
 def main():
     parser = argparse.ArgumentParser(description='Unified NL-MM Training')
     parser.add_argument('--model', type=str, default='nlmm')
-    parser.add_argument('--config', type=str, default='nl_mm/configs/nano_8gb.yaml')
+    parser.add_argument('--config', type=str, default='modules/nl_mm/configs/nano_8gb.yaml')
     parser.add_argument('--data_dir', type=str, default='./flickr8k')
     parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--batch_size', type=int, default=8)

@@ -15,11 +15,11 @@ from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 import time
 
-from nl_mm.models.nl_mm_model import NLMM
-from nl_mm.utils import load_config
-from nl_mm.init import apply_nlmm_init
-from src.utils.flickr8k_dataset import Flickr8kAudioDataset, collate_fn
-from src.utils import get_device
+from modules.nl_mm.models.nl_mm_model import NLMM
+from modules.nl_mm.utils import load_config
+from modules.nl_mm.init import apply_nlmm_init
+from utils.flickr8k_dataset import Flickr8kAudioDataset, collate_fn
+from utils import get_device
 
 from torch.utils.tensorboard import SummaryWriter
 
@@ -464,7 +464,7 @@ if __name__ == "__main__":
                         help="Image size (square)")
 
     # Model
-    parser.add_argument("--config", type=str, default="nl_mm/configs/tiny_single_gpu.yaml",
+    parser.add_argument("--config", type=str, default="modules/nl_mm/configs/tiny_single_gpu.yaml",
                         help="Path to nl_mm config file")
 
     # Training
@@ -486,7 +486,7 @@ if __name__ == "__main__":
                         help="Enable test-time training during eval")
 
     # Logging
-    parser.add_argument("--output_dir", type=str, default="./outputs/nlmm_flickr8k",
+    parser.add_argument("--output_dir", type=str, default="./results/folder_per_model/nl_mm/outputs/nlmm_flickr8k",
                         help="Output directory for checkpoints and logs")
     parser.add_argument("--eval_every", type=int, default=5,
                         help="Evaluate every N epochs")
