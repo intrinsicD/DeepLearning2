@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from nl_mm.modules.optim.d_mgd import DMGD
+from modules.nl_mm.modules.optim.d_mgd import DMGD
 
 
 def test_dmgd_modulation_parameters_update():

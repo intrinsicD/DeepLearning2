@@ -9,7 +9,7 @@ This guide will help you find the best optimizer for the nl_mm model on your har
 ### Run Quick Test (5 epochs, ~15 minutes):
 ```bash
 python test_nl_mm_optimizers.py \
-    --config nl_mm/configs/nano_8gb.yaml \
+    --config modules/nl_mm/configs/nano_8gb.yaml \
     --data_dir ./flickr8k \
     --epochs 5 \
     --batch_size 8 \
@@ -19,7 +19,7 @@ python test_nl_mm_optimizers.py \
 ### Run Full Test (10 epochs, ~45 minutes):
 ```bash
 python test_nl_mm_optimizers.py \
-    --config nl_mm/configs/nano_8gb.yaml \
+    --config modules/nl_mm/configs/nano_8gb.yaml \
     --data_dir ./flickr8k \
     --epochs 10 \
     --batch_size 8 \
@@ -80,7 +80,7 @@ The script compares these optimizers:
 
 ### Files Created:
 ```
-outputs/optimizer_comparison/
+results/folder_per_model/nl_mm/outputs/optimizer_comparison/
 ├── optimizer_comparison.json     # Detailed metrics
 └── optimizer_comparison.png      # Visual comparison
 ```
@@ -141,7 +141,7 @@ rmsprop      0.5456       41.80        44.8            3.7
 ```bash
 # Quick test (15 min):
 python test_nl_mm_optimizers.py \
-    --config nl_mm/configs/nano_8gb.yaml \
+    --config modules/nl_mm/configs/nano_8gb.yaml \
     --data_dir ./flickr8k \
     --epochs 5 \
     --batch_size 8 \
@@ -153,7 +153,7 @@ python test_nl_mm_optimizers.py \
 ```bash
 # Full test (45 min):
 python test_nl_mm_optimizers.py \
-    --config nl_mm/configs/tiny_single_gpu.yaml \
+    --config modules/nl_mm/configs/tiny_single_gpu.yaml \
     --data_dir ./flickr8k \
     --epochs 10 \
     --batch_size 16 \
@@ -164,7 +164,7 @@ python test_nl_mm_optimizers.py \
 ```bash
 # Comprehensive test (2 hours):
 python test_nl_mm_optimizers.py \
-    --config nl_mm/configs/tiny_single_gpu.yaml \
+    --config modules/nl_mm/configs/tiny_single_gpu.yaml \
     --data_dir ./flickr8k \
     --epochs 20 \
     --batch_size 32 \
@@ -265,17 +265,17 @@ python test_nl_mm_optimizers.py \
 ### Step 2: View Results
 ```bash
 # Open the plot
-xdg-open outputs/optimizer_comparison/optimizer_comparison.png
+xdg-open results/folder_per_model/nl_mm/outputs/optimizer_comparison/optimizer_comparison.png
 
 # Check JSON for detailed metrics
-cat outputs/optimizer_comparison/optimizer_comparison.json
+cat results/folder_per_model/nl_mm/outputs/optimizer_comparison/optimizer_comparison.json
 ```
 
 ### Step 3: Train with Best Optimizer
 ```bash
 # If AdamW wins, use it for full training:
 python train_nlmm_flickr8k.py \
-    --config nl_mm/configs/nano_8gb.yaml \
+    --config modules/nl_mm/configs/nano_8gb.yaml \
     --data_dir ./flickr8k \
     --epochs 30 \
     --batch_size 8
@@ -288,7 +288,7 @@ python train_nlmm_flickr8k.py \
 ### Use Smaller Config:
 ```bash
 # Create even smaller config for testing
---config nl_mm/configs/nano_8gb.yaml  # Already small!
+--config modules/nl_mm/configs/nano_8gb.yaml  # Already small!
 ```
 
 ### Use Fewer Epochs:
@@ -316,7 +316,7 @@ python train_nlmm_flickr8k.py \
 --batch_size 4
 
 # Or use smaller config
---config nl_mm/configs/nano_8gb.yaml
+--config modules/nl_mm/configs/nano_8gb.yaml
 ```
 
 ### Too Slow:
@@ -373,7 +373,7 @@ ls flickr8k/Flickr8k_Dataset/ | head
 
 ```bash
 python test_nl_mm_optimizers.py \
-    --config nl_mm/configs/nano_8gb.yaml \
+    --config modules/nl_mm/configs/nano_8gb.yaml \
     --data_dir ./flickr8k \
     --epochs 5 \
     --batch_size 8 \
@@ -398,7 +398,7 @@ Once you know the best optimizer, update your training command:
 ```bash
 # If AdamW wins (most likely):
 python train_nlmm_flickr8k.py \
-    --config nl_mm/configs/nano_8gb.yaml \
+    --config modules/nl_mm/configs/nano_8gb.yaml \
     --data_dir ./flickr8k \
     --epochs 30 \
     --batch_size 8

@@ -184,7 +184,7 @@ class NeuralNet:
             except Exception:
                 pass
             try:
-                from nl_mm.modules.optim.d_mgd import DMGD
+                from modules.nl_mm.modules.optim.d_mgd import DMGD
                 if opt_name == 'dmgd':
                     optimizer = DMGD(self.model.parameters(), lr=self.cfg.lr, beta=0.9, learnable_modulation=True)
             except Exception:

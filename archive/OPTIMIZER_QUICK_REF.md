@@ -5,7 +5,7 @@
 ### ⚡ Quick Test (15 min) - RECOMMENDED
 ```bash
 python test_nl_mm_optimizers.py \
-    --config nl_mm/configs/nano_8gb.yaml \
+    --config modules/nl_mm/configs/nano_8gb.yaml \
     --data_dir ./flickr8k \
     --epochs 5 \
     --batch_size 8 \
@@ -16,7 +16,7 @@ python test_nl_mm_optimizers.py \
 ### 📊 Medium Test (45 min) - More Accurate
 ```bash
 python test_nl_mm_optimizers.py \
-    --config nl_mm/configs/nano_8gb.yaml \
+    --config modules/nl_mm/configs/nano_8gb.yaml \
     --data_dir ./flickr8k \
     --epochs 10 \
     --batch_size 8 \
@@ -26,7 +26,7 @@ python test_nl_mm_optimizers.py \
 ### 🔬 Full Test (2-3 hours) - Most Accurate
 ```bash
 python test_nl_mm_optimizers.py \
-    --config nl_mm/configs/nano_8gb.yaml \
+    --config modules/nl_mm/configs/nano_8gb.yaml \
     --data_dir ./flickr8k \
     --epochs 15 \
     --batch_size 8 \
@@ -36,7 +36,7 @@ python test_nl_mm_optimizers.py \
 ### 🚀 Skip Test & Train Directly
 ```bash
 python train_nlmm_flickr8k.py \
-    --config nl_mm/configs/nano_8gb.yaml \
+    --config modules/nl_mm/configs/nano_8gb.yaml \
     --data_dir ./flickr8k \
     --epochs 30 \
     --batch_size 8
@@ -49,10 +49,10 @@ python train_nlmm_flickr8k.py \
 ### After test completes:
 ```bash
 # View plot
-xdg-open outputs/optimizer_comparison/optimizer_comparison.png
+xdg-open results/folder_per_model/nl_mm/outputs/optimizer_comparison/optimizer_comparison.png
 
 # View JSON
-cat outputs/optimizer_comparison/optimizer_comparison.json | jq
+cat results/folder_per_model/nl_mm/outputs/optimizer_comparison/optimizer_comparison.json | jq
 ```
 
 ---

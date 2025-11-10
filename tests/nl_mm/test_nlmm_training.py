@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from nl_mm.models.nl_mm_model import NLMM
+from modules.nl_mm.models.nl_mm_model import NLMM
 
 
 def _tiny_cfg() -> dict:

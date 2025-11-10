@@ -1,125 +1,87 @@
 # DeepLearning2
 
-A flexible Python framework for experimenting with different deep learning architectures and optimizers on a single GPU using PyTorch and CUDA.
+A flexible PyTorch framework for rapid experimentation with multimodal architectures, custom optimizers, and unified training utilities.
 
 ## Features
 
-- **Modular Architecture Design**: Easily design and test different neural network architectures
-- **Custom Optimizers**: Implement and test various optimization algorithms
-- **GPU Acceleration**: Full CUDA support for single GPU training
-- **Extensible Framework**: Simple interfaces for adding new architectures and optimizers
+- **Modular architecture design**: plug-and-play building blocks in `architectures/` and `models/`
+- **Optimizer zoo**: custom optimizers and schedulers collected under `optimizers/`
+- **Experiment hub**: runnable demos and ablations inside `modules/`
+- **Training scripts**: reproducible pipelines collected under `training/scripts/`
+- **Results archive**: curated metrics, figures, and reports in `results/`
 
 ## Installation
 
 1. Clone the repository:
-```bash
-git clone https://github.com/intrinsicD/DeepLearning2.git
-cd DeepLearning2
-```
-
-2. Create a virtual environment (recommended):
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
+   ```bash
+   git clone https://github.com/intrinsicD/DeepLearning2.git
+   cd DeepLearning2
+   ```
+2. (Recommended) create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows use: venv\Scripts\activate
+   ```
 3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-## Project Structure
+## Project layout
 
 ```
 DeepLearning2/
-├── src/
-│   ├── architectures/     # Neural network architectures
-│   ├── optimizers/        # Custom optimizers
-│   ├── utils/             # Training utilities and helpers
-│   └── experiments/       # Example experiments
-├── requirements.txt       # Python dependencies
+├── architectures/             # Core architecture definitions
+├── archive/                   # Historical notes, reports, and retired scripts
+├── data/                      # Placeholder for locally downloaded datasets
+├── datasets/                  # Dataset preparation utilities and scripts
+│   └── scripts/
+├── models/                    # Model wrappers and shared modules
+├── modules/                   # Experiments, demos, and the nl_mm package
+│   ├── demos/
+│   ├── experiments/
+│   └── nl_mm/
+├── optimizers/                # Custom optimizers and scheduler utilities
+├── results/
+│   ├── analysis/              # Result inspection notebooks and scripts
+│   ├── figures/               # Generated plots and visual assets
+│   └── folder_per_model/      # Run artifacts grouped by model
+├── tests/                     # Automated and manual test suites
+├── training/
+│   ├── diagnostics/           # Debugging helpers for training runs
+│   └── scripts/               # Command-line entry points for experiments
+├── utils/                     # Shared utility modules (device, data, viz, ...)
+├── venv/                      # Local virtual environment (optional)
+├── requirements.txt
 └── README.md
 ```
 
-## Quick Start
+## Quick start
 
-### 1. Define a Custom Architecture
-
-```python
-from src.architectures.base import BaseArchitecture
-import torch.nn as nn
-
-class MyCustomNet(BaseArchitecture):
-    def __init__(self, input_size, num_classes):
-        super().__init__()
-        self.fc1 = nn.Linear(input_size, 128)
-        self.fc2 = nn.Linear(128, num_classes)
-        self.relu = nn.ReLU()
-    
-    def forward(self, x):
-        x = self.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
-```
-
-### 2. Use a Custom Optimizer
-
-```python
-from src.optimizers.custom_sgd import CustomSGD
-
-optimizer = CustomSGD(model.parameters(), lr=0.01, momentum=0.9)
-```
-
-### 3. Train Your Model
-
-```python
-from src.utils.trainer import Trainer
-
-trainer = Trainer(
-    model=model,
-    optimizer=optimizer,
-    device='cuda',  # Use GPU
-    criterion=nn.CrossEntropyLoss()
-)
-
-trainer.train(train_loader, epochs=10)
-```
-
-## Example Experiments
-
-Run the example MNIST classification experiment:
+Run the MNIST comparison experiment:
 ```bash
-python -m src.experiments.mnist_example
+python -m modules.experiments.compare_architectures --epochs 3
 ```
 
-## GPU Support
+Or launch the multimodal Flickr8k training pipeline:
+```bash
+python -m training.scripts.train_flickr8k --data-root /path/to/flickr8k
+```
 
-The framework automatically detects and uses CUDA if available. You can check GPU availability:
+### Using utilities
 
 ```python
-from src.utils.device import get_device, print_gpu_info
+from architectures import SimpleCNN
+from optimizers import CustomAdam
+from utils import Trainer, get_device, get_mnist_loaders
 
-device = get_device()  # Returns 'cuda' if available, else 'cpu'
-print_gpu_info()  # Prints GPU information
+model = SimpleCNN(input_channels=1, num_classes=10)
+device = get_device()
+optimizer = CustomAdam(model.parameters(), lr=1e-3)
+trainer = Trainer(model=model, optimizer=optimizer, device=device)
+train_loader, val_loader, _ = get_mnist_loaders(batch_size=64)
+trainer.train(train_loader, epochs=5, val_loader=val_loader)
 ```
-
-## Adding New Architectures
-
-1. Create a new file in `src/architectures/`
-2. Inherit from `BaseArchitecture`
-3. Implement the `__init__` and `forward` methods
-
-## Adding New Optimizers
-
-1. Create a new file in `src/optimizers/`
-2. Inherit from `torch.optim.Optimizer`
-3. Implement the `step` method
-
-## Requirements
-
-- Python 3.8+
-- PyTorch 2.0+ with CUDA support
-- NVIDIA GPU with CUDA capability (recommended)
 
 ## License
 

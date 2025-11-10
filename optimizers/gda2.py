@@ -6,7 +6,7 @@ correction is regularised using gradient-difference statistics, enabling the
 optimizer to favour history segments that exhibit stable curvature while
 down-weighting noisy updates.  The implementation mirrors the description
 provided in the accompanying documentation and is designed to interoperate with
-the existing optimizer registry in :mod:`src.optimizers`.
+the existing optimizer registry in :mod:`optimizers`.
 """
 
 from __future__ import annotations

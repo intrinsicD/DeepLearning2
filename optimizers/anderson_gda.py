@@ -29,7 +29,7 @@ solve when residual vectors become nearly linearly dependent.
 
 Example usage::
 
-    from src.optimizers.anderson_gda import AndersonGDA
+    from optimizers.anderson_gda import AndersonGDA
     optimizer = AndersonGDA(model.parameters(), lr=1e-3, beta=0.5, m=3)
 
     for input, target in dataloader:

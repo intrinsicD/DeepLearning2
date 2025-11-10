@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from nl_mm.modules.ttt import TTTAdapter
-from nl_mm.models.nl_mm_model import NLMM
+from modules.nl_mm.modules.ttt import TTTAdapter
+from modules.nl_mm.models.nl_mm_model import NLMM
 
 
 def _minimal_config():
