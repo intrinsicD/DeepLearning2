@@ -1,0 +1,9 @@
+Warning: wav2capt.txt not found. Creating image-text pairs only.
+Loaded 30000 tri-modal samples for train split
+Warning: wav2capt.txt not found. Creating image-text pairs only.
+Loaded 5000 tri-modal samples for val split
+Starting unified training...
+Epoch 1: avg_loss=9.6701
+💾 Saved best model (metric=-8.6793)
+Training complete. Evaluating...
+Eval metric: -8.6793

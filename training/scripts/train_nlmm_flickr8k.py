@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import time
 
@@ -35,7 +36,7 @@ def info_nce_loss(query: torch.Tensor, key: torch.Tensor, temperature: float = 0
 class MetricsTracker:
     """Track and visualize training metrics."""
     
-    def __init__(self, save_dir: Path):
+    def __init__(self, save_dir: Path, use_tensorboard: bool = True):
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.metrics = {
@@ -49,17 +50,54 @@ class MetricsTracker:
             'val_i2a_r1': [],
             'learning_rate': [],
         }
-    
+        # Initialize TensorBoard writer
+        self.writer = None
+        if use_tensorboard:
+            tensorboard_dir = self.save_dir / 'tensorboard'
+            self.writer = SummaryWriter(str(tensorboard_dir))
+            print(f"   📊 TensorBoard logging to: {tensorboard_dir}")
+            print(f"   Run: tensorboard --logdir={tensorboard_dir}")
+
     def add(self, **kwargs):
         for key, value in kwargs.items():
             if key in self.metrics:
                 self.metrics[key].append(value)
-    
+
+        # Log to TensorBoard
+        if self.writer is not None and 'epoch' in kwargs:
+            epoch = kwargs['epoch']
+            # Log training losses
+            if 'train_loss' in kwargs:
+                self.writer.add_scalar('Loss/train_total', kwargs['train_loss'], epoch)
+            if 'train_i2t' in kwargs:
+                self.writer.add_scalar('Loss/train_image_text', kwargs['train_i2t'], epoch)
+            if 'train_i2a' in kwargs:
+                self.writer.add_scalar('Loss/train_image_audio', kwargs['train_i2a'], epoch)
+            if 'train_t2a' in kwargs:
+                self.writer.add_scalar('Loss/train_text_audio', kwargs['train_t2a'], epoch)
+
+            # Log validation metrics
+            if 'val_i2t_r1' in kwargs:
+                self.writer.add_scalar('Retrieval/image_to_text_R1', kwargs['val_i2t_r1'], epoch)
+            if 'val_t2i_r1' in kwargs:
+                self.writer.add_scalar('Retrieval/text_to_image_R1', kwargs['val_t2i_r1'], epoch)
+            if 'val_i2a_r1' in kwargs:
+                self.writer.add_scalar('Retrieval/image_to_audio_R1', kwargs['val_i2a_r1'], epoch)
+
+            # Log learning rate
+            if 'learning_rate' in kwargs:
+                self.writer.add_scalar('Hyperparameters/learning_rate', kwargs['learning_rate'], epoch)
+
     def save(self):
         """Save metrics to JSON."""
         with open(self.save_dir / 'metrics.json', 'w') as f:
             json.dump(self.metrics, f, indent=2)
     
+    def close(self):
+        """Close TensorBoard writer."""
+        if self.writer is not None:
+            self.writer.close()
+
     def plot(self):
         """Generate training plots."""
         try:
@@ -162,8 +200,10 @@ def train_epoch(model, dataloader, scheduler, scaler, device, epoch, args):
         
         # Gradient accumulation
         if (step + 1) % args.accumulation_steps == 0:
-            # Gradient clipping
-            scaler.unscale_(scheduler)
+            # Gradient clipping - unscale gradients for all optimizers in NLScheduler
+            if hasattr(scheduler, '_level_states'):
+                for level_state in scheduler._level_states.values():
+                    scaler.unscale_(level_state.optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.max_grad_norm)
             
             # Optimizer step using NL scheduler
@@ -307,8 +347,8 @@ def main(args):
     # Metrics tracker
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    tracker = MetricsTracker(output_dir)
-    
+    tracker = MetricsTracker(output_dir, use_tensorboard=not args.no_tensorboard)
+
     # Training loop
     print(f"\n🏋️  Training for {args.epochs} epochs...")
     best_metric = 0.0
@@ -331,6 +371,16 @@ def main(args):
             print(f"   Image↔Audio: {train_metrics['i2a_loss']:.4f}")
             print(f"   Text↔Audio: {train_metrics['t2a_loss']:.4f}")
         
+        # Log training metrics every epoch to TensorBoard
+        if tracker.writer is not None:
+            tracker.writer.add_scalar('Loss/train_total', train_metrics['loss'], epoch)
+            if train_metrics['i2t_loss'] > 0:
+                tracker.writer.add_scalar('Loss/train_image_text', train_metrics['i2t_loss'], epoch)
+                tracker.writer.add_scalar('Loss/train_image_audio', train_metrics['i2a_loss'], epoch)
+                tracker.writer.add_scalar('Loss/train_text_audio', train_metrics['t2a_loss'], epoch)
+            tracker.writer.add_scalar('Hyperparameters/learning_rate', cfg['optimizer']['adamw']['lr'], epoch)
+            tracker.writer.flush()  # Force write to disk
+
         # Evaluate every N epochs
         if epoch % args.eval_every == 0:
             print(f"\n🔍 Evaluating...")
@@ -353,6 +403,10 @@ def main(args):
                 learning_rate=cfg['optimizer']['adamw']['lr'],
             )
             
+            # Force flush to TensorBoard
+            if tracker.writer is not None:
+                tracker.writer.flush()
+
             # Save best model
             avg_metric = (val_metrics['i2t_r1'] + val_metrics['t2i_r1']) / 2
             if avg_metric > best_metric:
@@ -392,6 +446,7 @@ def main(args):
     
     tracker.save()
     tracker.plot()
+    tracker.close()  # Close TensorBoard writer
 
 
 if __name__ == "__main__":
@@ -434,7 +489,9 @@ if __name__ == "__main__":
                         help="Save checkpoint every N epochs")
     parser.add_argument("--plot_every", type=int, default=5,
                         help="Generate plots every N epochs")
-    
+    parser.add_argument("--no_tensorboard", action="store_true",
+                        help="Disable TensorBoard logging")
+
     # System
     parser.add_argument("--num_workers", type=int, default=4,
                         help="Number of data loader workers")

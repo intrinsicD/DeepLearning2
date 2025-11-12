@@ -127,11 +127,21 @@ class AudioEncoder(nn.Module):
         d_model = cfg["d_model"]
         depth = cfg["depth"]["audio"]
         in_chans = cfg.get("audio_channels", 1)
+        n_mels = cfg.get("audio_mel_bins", 80)
+
+        # Frontend for 2D mel spectrograms (channels, mels, time)
+        # Use Conv2d to process time-frequency representation
         self.frontend = nn.Sequential(
-            nn.Conv1d(in_chans, d_model // 2, kernel_size=3, padding=1),
+            nn.Conv2d(in_chans, d_model // 4, kernel_size=(3, 3), padding=(1, 1)),
             nn.GELU(),
-            nn.Conv1d(d_model // 2, d_model, kernel_size=3, padding=1),
+            nn.Conv2d(d_model // 4, d_model // 2, kernel_size=(3, 3), padding=(1, 1)),
+            nn.GELU(),
+            # Pool over frequency dimension to get (batch, d_model//2, time)
+            nn.AdaptiveAvgPool2d((1, None)),  # Pool frequency to 1
         )
+        # Final projection to d_model
+        self.projection = nn.Conv1d(d_model // 2, d_model, kernel_size=1)
+
         self.blocks = nn.ModuleList()
         for _ in range(depth):
             cms = ContinuumMLP(d_model, cfg["ffn_mult"], cfg["cms_levels"])
@@ -151,7 +161,13 @@ class AudioEncoder(nn.Module):
     def forward(self, audio: torch.Tensor, state: Optional[list[NLBlockState]] = None, *, enable_ttt: bool = False) -> tuple[torch.Tensor, list[NLBlockState]]:
         if state is None:
             state = [NLBlockState() for _ in range(len(self.blocks))]
-        x = self.frontend(audio).transpose(1, 2)
+
+        # audio shape: (batch, channels, mels, time) for mel spectrograms
+        x = self.frontend(audio)  # (batch, d_model//2, 1, time)
+        x = x.squeeze(2)  # (batch, d_model//2, time)
+        x = self.projection(x)  # (batch, d_model, time)
+        x = x.transpose(1, 2)  # (batch, time, d_model)
+
         slow_state = x.mean(dim=1)
         new_state: list[NLBlockState] = []
         for block, block_state in zip(self.blocks, state):

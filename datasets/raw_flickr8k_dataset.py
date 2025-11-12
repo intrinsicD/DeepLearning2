@@ -183,8 +183,31 @@ class Flickr8kAudioDataset(Dataset):
         return samples
     
     def _load_image(self, image_id: str) -> torch.Tensor:
-        """Load and transform image."""
+        """Load and transform image with fallback for Flicker vs Flickr naming."""
         image_path = self.image_dir / image_id
+
+        # Try the configured path first
+        if not image_path.exists():
+            # Fallback: try alternative spellings
+            candidates = [
+                self.root_dir / "Flickr8k_Dataset" / image_id,
+                self.root_dir / "Flicker8k_Dataset" / image_id,
+                self.root_dir / "images" / image_id,
+                self.root_dir / image_id,
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    image_path = candidate
+                    break
+            else:
+                raise FileNotFoundError(
+                    f"Image not found: {image_id}\n"
+                    f"Tried paths:\n  - {self.image_dir / image_id}\n"
+                    f"  - {self.root_dir / 'Flickr8k_Dataset' / image_id}\n"
+                    f"  - {self.root_dir / 'Flicker8k_Dataset' / image_id}\n"
+                    f"Root dir: {self.root_dir}"
+                )
+
         image = Image.open(image_path).convert('RGB')
         return self.transform(image)
     
