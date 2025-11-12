@@ -6,13 +6,12 @@ Tri-modal dataset: Images + Text captions + Spoken audio captions
 
 Dataset structure expected:
     flickr8k/
-        Flickr8k_Dataset/         # Images
-        Flickr8k_text/
-            Flickr8k.token.txt    # Image ID + caption text
-            Flickr_8k.trainImages.txt
-            Flickr_8k.devImages.txt  
-            Flickr_8k.testImages.txt
-        flickr_audio/             # FACC audio files
+        Flicker8k_Dataset/        # Images (note: Flicker not Flickr)
+        Flickr8k.token.txt        # Image ID + caption text
+        Flickr_8k.trainImages.txt
+        Flickr_8k.devImages.txt
+        Flickr_8k.testImages.txt
+        flickr_audio/             # FACC audio files (optional)
             wav2capt.txt          # Audio file -> (image_id, caption_idx) mapping
             wavs/                 # All .wav files
 
@@ -66,8 +65,8 @@ class Flickr8kAudioDataset(Dataset):
         self.text_max_len = text_max_len
         
         # Paths
-        self.image_dir = self.root_dir / "Flickr8k_Dataset"
-        self.text_dir = self.root_dir / "Flickr8k_text"
+        self.image_dir = self.root_dir / "Flicker8k_Dataset"  # Note: Flicker not Flickr
+        self.text_dir = self.root_dir  # Text files are in root, not subdirectory
         self.audio_dir = self.root_dir / "flickr_audio" / "wavs"
         
         # Image transform
