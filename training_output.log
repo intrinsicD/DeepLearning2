@@ -21,3 +21,12 @@ Learning rate: 0.0002
 It looks like you are trying to rescale already rescaled images. If the input images have pixel values between 0 and 1, set `do_rescale=False` to avoid rescaling them again.
 /home/alex/Documents/DeepLearning2/train_multimodal_brain_flickr8k.py:465: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
   with torch.cuda.amp.autocast(enabled=self.scaler.is_enabled()):
+/home/alex/Documents/DeepLearning2/train_multimodal_brain_flickr8k.py:510: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with torch.cuda.amp.autocast(enabled=self.scaler.is_enabled()):
+[epoch 0] val_loss = 5.5423
+[epoch 0] new best val 5.5423 -> saved checkpoints_brain_v2/best_brain_v2.pt
+[epoch 1] val_loss = 5.0868
+[epoch 1] new best val 5.0868 -> saved checkpoints_brain_v2/best_brain_v2.pt
+Training complete.
+Best val loss: 5.0868
+Best model saved under: checkpoints_brain_v2

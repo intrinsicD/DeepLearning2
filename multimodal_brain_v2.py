@@ -310,7 +310,15 @@ class ThinkingCore(nn.Module):
         for name, z in z_by_mod.items():
             self.ensure_modality(name)
             base = self.modality_tokens[name].to(z.device).expand(B, 1, -1)
-            tokens.append(base + z.unsqueeze(1))  # (B,1,D)
+            # Handle different dimensions properly
+            if z.dim() == 1:
+                # If z is 1D, we need to add batch dimension properly
+                z_tok = base + z.unsqueeze(0).unsqueeze(1)  # (1,1,D) -> (B,1,D)
+            elif z.dim() == 2:
+                z_tok = base + z.unsqueeze(1)  # (B,1,D)
+            else:
+                raise ValueError(f"Unexpected z dimension for {name}: {z.shape}")
+            tokens.append(z_tok)
             names.append(name)
 
         # optional memory token
@@ -321,6 +329,7 @@ class ThinkingCore(nn.Module):
                 m0 = memory_state.unsqueeze(1)  # (B,1,D)
             tokens.append(m0)
             names.append("[M]")
+
 
         x = torch.cat(tokens, dim=1)  # (B, N_tokens, D)
 
