@@ -23,16 +23,11 @@ from typing import Dict, Any, List, Optional
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from torch.nn.utils.rnn import pad_sequence
 
-import torchvision.transforms as T
 from torchvision.utils import make_grid
-
-import torchaudio
 
 try:
     import matplotlib
@@ -42,25 +37,12 @@ try:
 except ImportError:
     HAS_MATPLOTLIB = False
 
-from transformers import (
-    AutoTokenizer,
-    AutoModel,
-    CLIPModel,
-    CLIPImageProcessor,
-)
-
 # Dataset (your existing code)
 from datasets.flickr8k_dataset import Flickr8kData, collate_fn as flickr_collate
 
 # The new architecture
-from multimodal_brain_v2 import (
-    MultimodalBrain,
-    ModalityInterface,
-    UpAdapter,
-    DownAdapter,     # not used in training, but available if you add decoders later
-    ThinkingCore,
-    ThinkControl,
-)
+from brain_v2_components import Preproc, build_brain
+from multimodal_brain_v2 import ThinkControl
 
 # ------------------------------------------------------------
 # Config / args
@@ -155,222 +137,6 @@ def info_nce(a: torch.Tensor, b: torch.Tensor, temperature: float = 0.07) -> tor
 
 
 # ------------------------------------------------------------
-# Encoders
-# ------------------------------------------------------------
-
-class E5TextEncoderWrapper(nn.Module):
-    """
-    Wraps intfloat/e5-small-v2 as a text encoder:
-    input: dict with 'input_ids' and 'attention_mask'
-    output: last_hidden_state (B, T, 384)
-    """
-    def __init__(self, model_name: str = "intfloat/e5-small-v2"):
-        super().__init__()
-        self.model = AutoModel.from_pretrained(model_name)
-        for p in self.model.parameters():
-            p.requires_grad = False
-        self.model.eval()
-
-    def forward(self, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
-        out = self.model(**inputs, return_dict=True)
-        return out.last_hidden_state  # (B,T,384)
-
-
-class CLIPVisionEncoderWrapper(nn.Module):
-    """
-    Wraps CLIP ViT-B/32 vision tower:
-    input: dict with 'pixel_values' (B,3,H,W)
-    output: last_hidden_state (B, seq, 768)
-    """
-    def __init__(self, name: str = "openai/clip-vit-base-patch32"):
-        super().__init__()
-        self.model = CLIPModel.from_pretrained(name)
-        for p in self.model.parameters():
-            p.requires_grad = False
-        self.model.eval()
-
-    def forward(self, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
-        pv = inputs["pixel_values"]
-        out = self.model.vision_model(pixel_values=pv)
-        return out.last_hidden_state  # (B, seq, 768)
-
-
-class AudioCNNEncoder(nn.Module):
-    """
-    Small CNN encoder over mel-spectrograms.
-    Input: tensor (B, 1, n_mels, T) or (B, n_mels, T)
-    Output: (B, d_audio) vector.
-    """
-    def __init__(self, n_mels: int = 80, d_out: int = 384):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.MaxPool2d((2, 2)),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d((2, 2)),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1)),  # (B,128,1,1)
-        )
-        self.proj = nn.Linear(128, d_out)
-
-    def forward(self, inputs: torch.Tensor | Dict[str, torch.Tensor]) -> torch.Tensor:
-        # Handle both direct tensor and dict input
-        if isinstance(inputs, dict):
-            x = inputs["mel"]
-        else:
-            x = inputs
-
-        # x: (B,1,n_mels,T) or (B,n_mels,T)
-        if x.dim() == 3:
-            x = x.unsqueeze(1)
-        h = self.net(x)  # (B,128,1,1)
-        h = h.view(h.size(0), 128)
-        return self.proj(h)  # (B,d_out)
-
-
-# ------------------------------------------------------------
-# Preprocessing (Flickr batch -> encoder inputs)
-# ------------------------------------------------------------
-
-class Preproc:
-    def __init__(self):
-        self.txt_tok = AutoTokenizer.from_pretrained("intfloat/e5-small-v2")
-        # Disable rescaling since our images are already in [0,1] range after denormalization
-        self.clip_proc = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch32", do_rescale=False)
-
-    def convert_flickr_batch(self, batch: Dict[str, Any]) -> Dict[str, Dict]:
-        """
-        Flickr8k batch format (from your collate_fn):
-          {
-            'images': (B,3,H,W) normalized,
-            'text': token indices (ignored here),
-            'audio': (B,1,n_mels,T) mel-spec,
-            'caption_strs': List[str],
-            'image_ids': List[str],
-            ...
-          }
-
-        We build encoder inputs compatible with our wrappers.
-        """
-        out: Dict[str, Dict] = {}
-
-        # Text
-        if "caption_strs" in batch:
-            texts = batch["caption_strs"]
-            # E5 recommends prefix like "query: " or "passage: "; we keep it simple here.
-            tk = self.txt_tok(
-                texts,
-                padding=True,
-                truncation=True,
-                max_length=128,
-                return_tensors="pt",
-            )
-            out["text"] = {"input_ids": tk.input_ids, "attention_mask": tk.attention_mask}
-            # Store raw texts separately if needed for logging
-            out["_raw_texts"] = texts
-
-        # Image
-        if "images" in batch:
-            imgs = batch["images"]
-            # imgs are already normalized by dataset, but CLIP processor expects unnormalized [0,1] range
-            # Denormalize first using ImageNet stats
-            mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(imgs.device)
-            std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(imgs.device)
-            imgs_denorm = imgs * std + mean
-            imgs_denorm = torch.clamp(imgs_denorm, 0, 1)
-
-            # Now CLIP processor can handle it
-            px = self.clip_proc(images=imgs_denorm, return_tensors="pt")
-            out["image"] = {"pixel_values": px.pixel_values}
-
-        # Audio
-        if "audio" in batch:
-            # Use mel-spectrograms directly.
-            # batch["audio"]: (B,1,n_mels,T)
-            out["audio"] = {"mel": batch["audio"].float()}
-
-        return out
-
-
-# ------------------------------------------------------------
-# Model builder
-# ------------------------------------------------------------
-
-def build_brain(cfg: Config, device: torch.device) -> MultimodalBrain:
-    d_shared = cfg.d_shared
-
-    # Encoders
-    print("Loading E5 text encoder...")
-    text_enc = E5TextEncoderWrapper()
-    print("Loading CLIP vision encoder...")
-    img_enc = CLIPVisionEncoderWrapper()
-    print("Initializing audio CNN encoder...")
-    aud_enc = AudioCNNEncoder(n_mels=80, d_out=384)
-
-    # UpAdapters into shared latent
-    print("Creating UpAdapters...")
-    text_up = UpAdapter(d_in=384, d_shared=d_shared)
-    img_up = UpAdapter(d_in=768, d_shared=d_shared)
-    aud_up = UpAdapter(d_in=384, d_shared=d_shared)
-
-    # No decoders by default (we only train thinking + alignment). You can add these later.
-    print("Building modality interfaces...")
-    text_iface = ModalityInterface(
-        name="text",
-        encoder=text_enc,
-        up_adapter=text_up,
-        decoder=None,
-        down_adapter=None,
-        freeze_encoder=True,
-        freeze_decoder=True,
-    )
-    image_iface = ModalityInterface(
-        name="image",
-        encoder=img_enc,
-        up_adapter=img_up,
-        decoder=None,
-        down_adapter=None,
-        freeze_encoder=True,
-        freeze_decoder=True,
-    )
-    audio_iface = ModalityInterface(
-        name="audio",
-        encoder=aud_enc,
-        up_adapter=aud_up,
-        decoder=None,
-        down_adapter=None,
-        freeze_encoder=False,  # small CNN; we train it
-        freeze_decoder=True,
-    )
-
-    modalities = {
-        "text": text_iface,
-        "image": image_iface,
-        "audio": audio_iface,
-    }
-
-    print("Creating ThinkingCore...")
-    core = ThinkingCore(d_shared=d_shared, n_layers=3, n_heads=8, dropout=0.0, use_memory_token=True)
-
-    print("Assembling MultimodalBrain...")
-    brain = MultimodalBrain(
-        d_shared=d_shared,
-        modalities=modalities,
-        thinking_core=core,
-        use_memory=True,
-    )
-
-    print(f"Moving model to {device}...")
-    return brain.to(device)
-
-
-# ------------------------------------------------------------
 # Trainer
 # ------------------------------------------------------------
 
@@ -411,7 +177,13 @@ class Trainer:
         )
 
         # Model
-        self.model = build_brain(cfg, self.device)
+        self.model = build_brain(
+            d_shared=cfg.d_shared,
+            device=self.device,
+            freeze_text=True,
+            freeze_image=True,
+            train_audio_encoder=True,
+        )
 
         # Optim
         params = [p for p in self.model.parameters() if p.requires_grad]
