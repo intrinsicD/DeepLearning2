@@ -17,9 +17,10 @@ Requires:
 """
 
 import argparse
+import math
 import os
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 
 import numpy as np
 import torch
@@ -61,9 +62,16 @@ class Config:
         logdir: str = "runs_brain_v2",
         d_shared: int = 512,
         use_8bit_optim: bool = False,
-        log_interval: int = 10,  # Log scalars every N steps
-        histogram_interval: int = 5,  # Log histograms every N epochs
-        resume_from: str = None,  # Path to checkpoint to resume from
+        log_interval: int = 10,
+        histogram_interval: int = 5,
+        resume_from: str = None,
+        grad_clip: float = 1.0,
+        accum_steps: int = 1,
+        scheduler: str = "cosine",
+        warmup_steps: int = 500,
+        min_lr: float = 1e-6,
+        num_workers: int = 0,
+        pin_memory: bool = False,
     ):
         self.root_dir = root_dir
         self.epochs = epochs
@@ -75,10 +83,16 @@ class Config:
         self.d_shared = d_shared
         self.use_8bit_optim = use_8bit_optim
         self.weight_decay = 0.01
-        self.warmup_steps = 500
+        self.warmup_steps = warmup_steps
         self.log_interval = log_interval
         self.histogram_interval = histogram_interval
         self.resume_from = resume_from
+        self.grad_clip = grad_clip
+        self.accum_steps = max(1, accum_steps)
+        self.scheduler = scheduler
+        self.min_lr = min_lr
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
 
 
 def parse_args() -> Config:
@@ -92,6 +106,13 @@ def parse_args() -> Config:
     p.add_argument("--logdir", type=str, default="runs_brain_v2")
     p.add_argument("--no_8bit", action="store_true", help="disable 8-bit optimizer even if available")
     p.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
+    p.add_argument("--grad_clip", type=float, default=1.0, help="Gradient clipping value (<=0 disables)")
+    p.add_argument("--accum_steps", type=int, default=1, help="Gradient accumulation steps")
+    p.add_argument("--scheduler", type=str, default="cosine", choices=["cosine", "linear", "none"], help="LR scheduler type")
+    p.add_argument("--warmup_steps", type=int, default=500, help="Number of warmup steps for scheduler")
+    p.add_argument("--min_lr", type=float, default=1e-6, help="Minimum LR reached by scheduler")
+    p.add_argument("--num_workers", type=int, default=0, help="DataLoader worker processes")
+    p.add_argument("--pin_memory", action="store_true", help="Enable DataLoader pin_memory")
     args = p.parse_args()
     return Config(
         root_dir=args.root_dir,
@@ -103,6 +124,13 @@ def parse_args() -> Config:
         logdir=args.logdir,
         use_8bit_optim=not args.no_8bit,
         resume_from=args.resume,
+        grad_clip=args.grad_clip,
+        accum_steps=args.accum_steps,
+        scheduler=args.scheduler,
+        warmup_steps=args.warmup_steps,
+        min_lr=args.min_lr,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
     )
 
 
@@ -165,14 +193,16 @@ class Trainer:
             self.train_data,
             batch_size=cfg.batch_size,
             shuffle=True,
-            num_workers=0,
+            num_workers=cfg.num_workers,
+            pin_memory=cfg.pin_memory,
             collate_fn=flickr_collate,
         )
         self.val_loader = DataLoader(
             self.val_data,
             batch_size=cfg.batch_size,
             shuffle=False,
-            num_workers=0,
+            num_workers=cfg.num_workers,
+            pin_memory=cfg.pin_memory,
             collate_fn=flickr_collate,
         )
 
@@ -197,6 +227,10 @@ class Trainer:
             self.optim = bnb.optim.AdamW8bit(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
         else:
             self.optim = torch.optim.AdamW(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
+
+        self.steps_per_epoch = math.ceil(len(self.train_loader) / cfg.accum_steps)
+        self.total_train_steps = max(1, self.steps_per_epoch * cfg.epochs)
+        self.scheduler = self._create_scheduler()
 
         # Precision / scaler
         use_amp = (cfg.precision == "fp16") and (self.device.type == "cuda")
@@ -258,6 +292,13 @@ class Trainer:
             except Exception as e:
                 print(f"⚠ Could not load optimizer state: {e}")
                 print("  Continuing with fresh optimizer")
+
+        if 'scheduler_state_dict' in checkpoint and self.scheduler is not None:
+            try:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                print("✓ Scheduler state loaded")
+            except Exception as e:
+                print(f"⚠ Could not load scheduler state: {e}")
 
         # Load training progress
         if 'epoch' in checkpoint:
@@ -322,6 +363,33 @@ class Trainer:
         }
         self.writer.add_custom_scalars(layout)
 
+    def _create_scheduler(self):
+        """Create the LR scheduler with optional warmup/decay."""
+        if self.cfg.scheduler == "none":
+            return None
+
+        warmup = max(0, min(self.cfg.warmup_steps, self.total_train_steps - 1))
+        base_lr = max(self.cfg.lr, 1e-12)
+        min_factor = max(0.0, min(1.0, self.cfg.min_lr / base_lr))
+
+        def lr_lambda(step: int) -> float:
+            if warmup > 0 and step < warmup:
+                return (step + 1) / float(warmup)
+
+            if self.total_train_steps <= warmup:
+                return 1.0
+
+            progress = (step - warmup) / float(max(1, self.total_train_steps - warmup))
+            progress = min(max(progress, 0.0), 1.0)
+
+            if self.cfg.scheduler == "linear":
+                return 1.0 - (1.0 - min_factor) * progress
+
+            # default: cosine
+            return min_factor + 0.5 * (1.0 - min_factor) * (1.0 + math.cos(math.pi * progress))
+
+        return torch.optim.lr_scheduler.LambdaLR(self.optim, lr_lambda=lr_lambda)
+
     def _to_device_nested(self, inputs: Dict[str, Dict]) -> Dict[str, Dict]:
         out = {}
         for k, d in inputs.items():
@@ -362,14 +430,18 @@ class Trainer:
         print(f"Precision: {self.cfg.precision}")
         print(f"Batch size: {self.cfg.batch_size}")
         print(f"Learning rate: {self.cfg.lr}")
+        if self.cfg.accum_steps > 1:
+            print(f"Gradient accumulation steps: {self.cfg.accum_steps}")
         print(f"Training epochs: {self.start_epoch} -> {self.cfg.epochs}")
 
         for epoch in range(self.start_epoch, self.cfg.epochs):
             self.current_epoch = epoch
             self.model.train()
             epoch_losses = []
+            accumulation_counter = 0
+            self.optim.zero_grad(set_to_none=True)
 
-            for batch in self.train_loader:
+            for batch_idx, batch in enumerate(self.train_loader):
                 inputs = self._prepare_inputs(batch)
 
                 with torch.amp.autocast('cuda', enabled=self.scaler.is_enabled()):
@@ -382,43 +454,69 @@ class Trainer:
                     losses = self._compute_losses(z_by_mod, z_global)
                     total_loss = sum(losses.values())
 
-                self.optim.zero_grad(set_to_none=True)
+                loss_values = {name: val.detach().item() for name, val in losses.items()}
+                total_loss_value = sum(loss_values.values())
+                epoch_losses.append(total_loss_value)
+
+                accumulation_counter += 1
+                is_last_batch = (batch_idx == len(self.train_loader) - 1)
+                effective_accum = self.cfg.accum_steps
+                if is_last_batch and accumulation_counter < self.cfg.accum_steps:
+                    effective_accum = accumulation_counter
+
+                loss_to_backprop = total_loss / effective_accum
+
                 if self.scaler.is_enabled():
-                    self.scaler.scale(total_loss).backward()
-                    # Unscale for gradient norm computation
+                    self.scaler.scale(loss_to_backprop).backward()
+                else:
+                    loss_to_backprop.backward()
+
+                should_step = (accumulation_counter == self.cfg.accum_steps) or is_last_batch
+
+                if not should_step:
+                    continue
+
+                if self.scaler.is_enabled():
                     self.scaler.unscale_(self.optim)
-                    grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), float('inf'))
+
+                clip_value = self.cfg.grad_clip if self.cfg.grad_clip and self.cfg.grad_clip > 0 else float('inf')
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_value)
+
+                if self.scaler.is_enabled():
                     self.scaler.step(self.optim)
                     self.scaler.update()
                 else:
-                    total_loss.backward()
-                    grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), float('inf'))
                     self.optim.step()
 
-                # Track epoch losses
-                epoch_losses.append(total_loss.item())
+                if self.scheduler is not None:
+                    self.scheduler.step()
 
-                # Log every N steps
+                self.optim.zero_grad(set_to_none=True)
+                accumulation_counter = 0
+
+                # Log every N optimizer steps
                 if self.global_step % self.cfg.log_interval == 0:
-                    # Hierarchical loss logging
-                    for name, val in losses.items():
-                        self.writer.add_scalar(f"loss/train/{name}", val.item(), self.global_step)
-                    self.writer.add_scalar("loss/train/total", total_loss.item(), self.global_step)
+                    for name, val in loss_values.items():
+                        self.writer.add_scalar(f"loss/train/{name}", val, self.global_step)
+                    self.writer.add_scalar("loss/train/total", total_loss_value, self.global_step)
 
-                    # Optimization metrics
                     self.writer.add_scalar("optimization/lr", self.optim.param_groups[0]['lr'], self.global_step)
-                    self.writer.add_scalar("optimization/grad_norm", grad_norm.item(), self.global_step)
+                    self.writer.add_scalar("optimization/grad_norm", float(grad_norm), self.global_step)
 
-                    # Embedding statistics
                     for mod_name, emb in z_by_mod.items():
-                        self.writer.add_scalar(f"embeddings/{mod_name}/mean", emb.mean().item(), self.global_step)
-                        self.writer.add_scalar(f"embeddings/{mod_name}/std", emb.std().item(), self.global_step)
-                        self.writer.add_scalar(f"embeddings/{mod_name}/norm", emb.norm(dim=-1).mean().item(), self.global_step)
+                        emb_det = emb.detach()
+                        self.writer.add_scalar(f"embeddings/{mod_name}/mean", emb_det.mean().item(), self.global_step)
+                        self.writer.add_scalar(f"embeddings/{mod_name}/std", emb_det.std().item(), self.global_step)
+                        self.writer.add_scalar(
+                            f"embeddings/{mod_name}/norm",
+                            emb_det.norm(dim=-1).mean().item(),
+                            self.global_step,
+                        )
 
-                    # Global token statistics
-                    self.writer.add_scalar("embeddings/global/mean", z_global.mean().item(), self.global_step)
-                    self.writer.add_scalar("embeddings/global/std", z_global.std().item(), self.global_step)
-                    self.writer.add_scalar("embeddings/global/norm", z_global.norm(dim=-1).mean().item(), self.global_step)
+                    z_global_det = z_global.detach()
+                    self.writer.add_scalar("embeddings/global/mean", z_global_det.mean().item(), self.global_step)
+                    self.writer.add_scalar("embeddings/global/std", z_global_det.std().item(), self.global_step)
+                    self.writer.add_scalar("embeddings/global/norm", z_global_det.norm(dim=-1).mean().item(), self.global_step)
 
                 self.global_step += 1
 
@@ -457,6 +555,9 @@ class Trainer:
                 # Add scaler state if using mixed precision
                 if self.scaler.is_enabled():
                     checkpoint['scaler_state_dict'] = self.scaler.state_dict()
+
+                if self.scheduler is not None:
+                    checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
 
                 torch.save(checkpoint, best_path)
                 print(f"[epoch {epoch}] new best val {val_loss:.4f} -> saved {best_path}")
