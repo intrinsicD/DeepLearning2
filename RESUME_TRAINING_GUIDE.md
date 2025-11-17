@@ -33,6 +33,7 @@ python train_multimodal_brain_flickr8k.py \
 Starting now, checkpoints save:
 - ✅ **Model weights** - All model parameters
 - ✅ **Optimizer state** - Adam momentum, learning rate schedule, etc.
+- ✅ **Scheduler state** - Resumes LR warmup/decay exactly
 - ✅ **Training progress** - Current epoch, global step
 - ✅ **Best validation loss** - For tracking improvement
 - ✅ **Config** - Training hyperparameters for reference
@@ -45,6 +46,7 @@ Checkpoint structure:
     'global_step': 158250,
     'model_state_dict': {...},
     'optimizer_state_dict': {...},
+    'scheduler_state_dict': {...},
     'best_val': 0.2345,
     'val_loss': 0.2345,
     'scaler_state_dict': {...},
@@ -64,9 +66,10 @@ Old checkpoints only contain model weights (state_dict). The script handles thes
 
 1. **Model weights are loaded** - Restores learned parameters
 2. **Optimizer state is restored** - Continues from same optimization state
-3. **Training continues from next epoch** - If stopped at epoch 10, resumes at epoch 11
-4. **Global step counter is restored** - TensorBoard logging continues seamlessly
-5. **Best validation loss is tracked** - Won't save worse checkpoints
+3. **Scheduler continues smoothly** - LR warmup/decay picks up where it left off
+4. **Training continues from next epoch** - If stopped at epoch 10, resumes at epoch 11
+5. **Global step counter is restored** - TensorBoard logging continues seamlessly
+6. **Best validation loss is tracked** - Won't save worse checkpoints
 
 ### Example Output When Resuming
 
