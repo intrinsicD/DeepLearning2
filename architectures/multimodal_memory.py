@@ -19,13 +19,18 @@ Key Features:
 from __future__ import annotations
 
 from typing import Dict, Optional, Tuple, List
-import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .base import BaseArchitecture
+
+
+def _sanitize_tensor(x: torch.Tensor) -> torch.Tensor:
+    """Clamp NaNs/Infs to finite values to keep training stable."""
+
+    return torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
 
 
 class TestTimeMemory(nn.Module):
@@ -116,6 +121,7 @@ class TestTimeMemory(nn.Module):
 
         # Residual connection and norm
         output = self.norm(attended + query)
+        output = _sanitize_tensor(output)
 
         if output.shape[1] == 1:
             output = output.squeeze(1)
@@ -168,15 +174,15 @@ class TestTimeMemory(nn.Module):
         
         # Read from memory first (uses MHA)
         augmented = self.read(content)
-        
+
         # Test-time training: Update memory if enabled (works in eval mode)
         if update_memory and self.enable_ttt_updates:
             self.ttt_update(content)
 
         if augmented.ndim == 3 and augmented.shape[1] == 1:
             augmented = augmented.squeeze(1)
-        
-        return augmented
+
+        return _sanitize_tensor(augmented)
     
     def forward(self, x: torch.Tensor, mode: str = "read") -> torch.Tensor:
         """Forward pass through memory.
@@ -260,11 +266,18 @@ class TextEncoder(nn.Module):
         # Pool to single vector (mean pooling)
         if mask is not None:
             mask_expanded = (~mask).unsqueeze(-1).float()
-            x = (x * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1)
+            valid_counts = mask_expanded.sum(dim=1)
+            safe_counts = valid_counts.clamp_min(1.0)
+            x = (x * mask_expanded).sum(dim=1) / safe_counts
+
+            # Zero-out entries that were entirely padding to prevent NaNs
+            zero_mask = (valid_counts.squeeze(-1) == 0)
+            if zero_mask.any():
+                x[zero_mask] = 0
         else:
             x = x.mean(dim=1)
-        
-        return self.norm(x)
+
+        return self.norm(_sanitize_tensor(x))
 
 
 class ImageEncoder(nn.Module):
@@ -346,11 +359,11 @@ class ImageEncoder(nn.Module):
         
         # Transformer
         x = self.transformer(x)
-        
+
         # Extract CLS token
         x = x[:, 0]
-        
-        return self.norm(x)
+
+        return self.norm(_sanitize_tensor(x))
 
 
 class AudioEncoder(nn.Module):
@@ -416,7 +429,7 @@ class AudioEncoder(nn.Module):
         x = self.pool(x)
         x = x.flatten(1)
         x = self.projection(x)
-        return self.norm(x)
+        return self.norm(_sanitize_tensor(x))
 
 
 class ModalityDecoder(nn.Module):
@@ -464,7 +477,7 @@ class ModalityDecoder(nn.Module):
         Returns:
             Modality-specific representation (batch, output_dim)
         """
-        return self.decoder(x)
+        return _sanitize_tensor(self.decoder(x))
 
 
 class MultiModalMemoryNetwork(BaseArchitecture):
@@ -720,9 +733,9 @@ class MultiModalMemoryNetwork(BaseArchitecture):
 
         # Concatenate: (batch, latent_dim*3 + 3)
         combined = torch.cat([text_enc, image_enc, audio_enc, presence], dim=1)
-        fused = self.fusion(combined)
-        
-        return fused
+        fused = self.fusion(_sanitize_tensor(combined))
+
+        return _sanitize_tensor(fused)
     
     def forward(
         self,
@@ -750,16 +763,16 @@ class MultiModalMemoryNetwork(BaseArchitecture):
         encodings = self.encode_modality(text, images, audio, text_mask)
         
         # Fuse modalities
-        fused = self.fuse_modalities(encodings)
-        
+        fused = _sanitize_tensor(self.fuse_modalities(encodings))
+
         # Update central memory and apply feedback loop
         central_latent = self.central_memory.write(fused)
-        
+
         for _ in range(self.feedback_steps):
-            central_latent = central_latent + self.feedback(central_latent)
+            central_latent = _sanitize_tensor(central_latent + self.feedback(central_latent))
             central_latent = self.central_memory.read(central_latent)
-        
-        outputs = {'central_latent': central_latent}
+
+        outputs = {'central_latent': _sanitize_tensor(central_latent)}
         
         # Decode to requested modalities
         if decode_to is not None:
