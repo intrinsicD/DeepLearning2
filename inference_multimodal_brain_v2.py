@@ -8,6 +8,7 @@ from typing import Dict, Iterable, Optional
 
 import torch
 import torch.nn.functional as F
+from torchvision.utils import save_image
 
 from brain_v2_components import Preproc, build_brain
 from multimodal_brain_v2 import ThinkControl
@@ -101,6 +102,8 @@ def run_inference(args: argparse.Namespace) -> Dict:
         decoded = {}
         if args.request:
             decoded = model.decode_outputs(z_global, z_by_mod_out, args.request)
+            if args.save_images and decoded:
+                _maybe_save_images(decoded.get("image"), Path(args.save_images))
 
     pairwise_in = _compute_pairwise(z_by_mod)
     pairwise_out = _compute_pairwise(z_by_mod_out)
@@ -147,6 +150,54 @@ def _to_serializable(value):
     return str(value)
 
 
+def _maybe_save_images(image_value, out_dir: Path):
+    if image_value is None:
+        return
+
+    tensor = _coerce_image_tensor(image_value)
+    if tensor is None:
+        print("⚠ Could not interpret decoded image tensor; skipping save.")
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    imgs = tensor.detach().cpu().float()
+    if imgs.dim() == 3:
+        imgs = imgs.unsqueeze(0)
+
+    min_val, max_val = imgs.min().item(), imgs.max().item()
+    if min_val < 0.0 or max_val > 1.0:
+        imgs = (imgs + 1.0) / 2.0
+    imgs = imgs.clamp(0.0, 1.0)
+
+    for idx, img in enumerate(imgs):
+        save_image(img, out_dir / f"sample_{idx:03d}.png")
+    print(f"Saved {imgs.size(0)} decoded image(s) to {out_dir}")
+
+
+def _coerce_image_tensor(value):
+    if isinstance(value, torch.Tensor):
+        return value
+    if isinstance(value, dict):
+        for key in ("pixel_values", "images", "image", "data"):
+            inner = value.get(key)
+            if isinstance(inner, torch.Tensor):
+                return inner
+        for inner in value.values():
+            tensor = _coerce_image_tensor(inner)
+            if tensor is not None:
+                return tensor
+    if isinstance(value, (list, tuple)) and value:
+        tensors = [t for t in (_coerce_image_tensor(v) for v in value) if t is not None]
+        if len(tensors) == 1:
+            return tensors[0]
+        if tensors:
+            try:
+                return torch.stack(tensors)
+            except Exception:
+                return tensors[0]
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run inference with Multimodal Brain v2")
     p.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
@@ -165,6 +216,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--include-tokens", action="store_true", help="Include intermediate tokens in JSON output")
     p.add_argument("--include-latents", action="store_true", help="Include latent tensors in JSON output")
     p.add_argument("--save-json", type=str, default=None, help="Optional path to save JSON results")
+    p.add_argument(
+        "--save-images",
+        type=str,
+        default=None,
+        help="Directory to store decoded image samples (PNG).",
+    )
     return p
 
 
