@@ -22,6 +22,7 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 
 from brain_v2_components import Preproc, build_brain
+from multimodal_brain_v2 import ThinkControl, DownAdapter, MultimodalBrain, ModalityInterface, UpAdapter, ThinkingCore
 
 
 class FlickrImageFilesDataset(Dataset):
@@ -59,19 +60,112 @@ def collate_fn(batch: List[dict]):
     return {'pil': pil, 'target': targets, 'path': paths}
 
 
+def build_smoke_brain(d_shared: int, device: torch.device):
+    """Construct a tiny MultimodalBrain with dummy encoders for smoke testing.
+    Returns a model on the requested device.
+    """
+    # Dummy encoders that return small feature tensors
+    class DummyTextEnc(nn.Module):
+        def __init__(self, out_dim=64):
+            super().__init__()
+            self.out_dim = out_dim
+        def forward(self, x):
+            B = 1
+            if isinstance(x, dict):
+                if 'input_ids' in x:
+                    B = x['input_ids'].size(0)
+                else:
+                    B = 1
+            return torch.zeros(B, 16, self.out_dim)
+
+    class DummyImageEnc(nn.Module):
+        def __init__(self, out_dim=128):
+            super().__init__()
+            self.out_dim = out_dim
+        def forward(self, x):
+            # x expected to be dict with 'pixel_values' (B,C,H,W)
+            B = x['pixel_values'].size(0)
+            T = 8
+            return torch.zeros(B, T, self.out_dim)
+
+    class DummyAudioEnc(nn.Module):
+        def __init__(self, out_dim=64):
+            super().__init__()
+            self.out_dim = out_dim
+        def forward(self, x):
+            B = x['input_features'].size(0) if isinstance(x, dict) and 'input_features' in x else 1
+            return torch.zeros(B, 8, self.out_dim)
+
+    text_enc = DummyTextEnc(out_dim=384)
+    img_enc = DummyImageEnc(out_dim=768)
+    aud_enc = DummyAudioEnc(out_dim=384)
+
+    text_up = UpAdapter(d_in=384, d_shared=d_shared)
+    img_up = UpAdapter(d_in=768, d_shared=d_shared)
+    aud_up = UpAdapter(d_in=384, d_shared=d_shared)
+
+    # small toy decoder/down below will be attached by caller
+    text_iface = ModalityInterface(name='text', encoder=text_enc, up_adapter=text_up, decoder=None, down_adapter=None, freeze_encoder=True, freeze_decoder=True)
+    image_iface = ModalityInterface(name='image', encoder=img_enc, up_adapter=img_up, decoder=None, down_adapter=None, freeze_encoder=True, freeze_decoder=True)
+    audio_iface = ModalityInterface(name='audio', encoder=aud_enc, up_adapter=aud_up, decoder=None, down_adapter=None, freeze_encoder=True, freeze_decoder=True)
+
+    core = ThinkingCore(d_shared=d_shared, n_layers=2, n_heads=4, dropout=0.0, use_memory_token=False)
+    brain = MultimodalBrain(d_shared=d_shared, modalities={'text': text_iface, 'image': image_iface, 'audio': audio_iface}, thinking_core=core, use_memory=False)
+    return brain.to(device)
+
+
 def train(args):
     device = torch.device(args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu'))
     print('Device:', device)
 
     pre = Preproc()
 
-    model = build_brain(d_shared=args.d_shared, device=device, freeze_text=True, freeze_image=True, train_audio_encoder=False)
+    if args.smoke:
+        model = build_smoke_brain(d_shared=args.d_shared, device=device)
+    else:
+        model = build_brain(d_shared=args.d_shared, device=device, freeze_text=True, freeze_image=True, train_audio_encoder=False)
     model.train()
 
+    # Smoke-mode: replace heavy VAE decoder with a tiny learnable decoder and ensure down-adapter outputs match
+    if args.smoke:
+        print("Smoke mode: attaching tiny image decoder/down-adapter for fast tests (no HF downloads)")
+        # create small down adapter to produce 4*8*8 latents (toy)
+        toy_c, toy_h, toy_w = 4, 8, 8
+        toy_dout = toy_c * toy_h * toy_w
+        # Replace down adapter with a small MLP
+        model.modalities['image'].down = DownAdapter(d_shared=args.d_shared, d_out=toy_dout)
+        # small decoder: map flattened latents -> 3x64x64 image
+        class ToyImageDecoder(nn.Module):
+            def __init__(self, d_in: int = toy_dout, out_h: int = 64, out_w: int = 64):
+                super().__init__()
+                self.out_h = out_h
+                self.out_w = out_w
+                self.head = nn.Sequential(
+                    nn.Linear(d_in, 512),
+                    nn.GELU(),
+                    nn.Linear(512, 3 * out_h * out_w),
+                )
+            def forward(self, x: torch.Tensor):
+                B = x.size(0)
+                if x.dim() == 2:
+                    v = x
+                else:
+                    v = x.view(B, -1)
+                out = self.head(v).view(B, 3, self.out_h, self.out_w)
+                out = out.sigmoid()
+                return out
+        model.modalities['image'].decoder = ToyImageDecoder()
+        # Ensure decoder parameters require grad (we'll train only down adapter per plan)
+        for p in model.modalities['image'].decoder.parameters():
+            p.requires_grad = False
+        # ensure down-adapter params are trainable
+        for p in model.modalities['image'].down.parameters():
+            p.requires_grad = True
+
     # Locate image down adapter
-    img_iface = model.modalities.get('image')
-    if img_iface is None:
+    if 'image' not in model.modalities:
         raise RuntimeError('Model has no image modality')
+    img_iface = model.modalities['image']
     if img_iface.down is None:
         raise RuntimeError('Image modality has no down adapter to train')
 
@@ -102,7 +196,7 @@ def train(args):
             opt.zero_grad()
             with torch.autocast(device.type, enabled=(args.precision=='fp16' and device.type=='cuda')):
                 z_by_mod = model.encode_inputs(inputs)
-                ctrl = type('C', (), {'steps': args.steps, 'mode':'default', 'effective_steps': lambda self: args.steps})()
+                ctrl = ThinkControl(steps=args.steps)
                 tokens, z_global, z_by_mod_out = model.think(z_by_mod, ctrl)
                 decoded = model.decode_outputs(z_global, z_by_mod_out, ['image'])
                 img_out = decoded.get('image')
@@ -152,7 +246,7 @@ if __name__ == '__main__':
     p.add_argument('--precision', type=str, default='fp32', choices=['fp32','fp16'])
     p.add_argument('--steps', type=int, default=2)
     p.add_argument('--outdir', type=str, default='checkpoints')
+    p.add_argument('--smoke', action='store_true', help='Use tiny toy decoder/down-adapter for quick smoke tests (no HF downloads)')
     args = p.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
     train(args)
-

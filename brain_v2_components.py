@@ -12,12 +12,14 @@ import torchaudio
 from PIL import Image
 
 from transformers import AutoModel, AutoTokenizer, CLIPImageProcessor, CLIPModel
+from diffusers import AutoencoderKL
 
 from multimodal_brain_v2 import (
     ModalityInterface,
     MultimodalBrain,
     ThinkingCore,
     UpAdapter,
+    DownAdapter,
 )
 
 
@@ -271,22 +273,69 @@ def build_brain(
     img_up = UpAdapter(d_in=768, d_shared=d_shared)
     aud_up = UpAdapter(d_in=384, d_shared=d_shared)
 
+    # Attach light-weight decoders for inference convenience
+    # Text decoder: map shared -> tokenizer logits -> strings
+    text_down = DownAdapter(d_shared=d_shared, d_out=384)
+    text_dec = TextDecoder(d_in=384)
+
+    # Image decoder: use a pretrained VAE (AutoencoderKL) to decode VAE latents -> image
+    # VAE latent grid config (match common SD VAE: C=4, H=32, W=32 for 256px images)
+    vae_name = "stabilityai/sd-vae-ft-mse"
+    vae_lat_c = 4
+    vae_lat_h = 32
+    vae_lat_w = 32
+
+    class VAEImageDecoder(nn.Module):
+        def __init__(self, name: str = vae_name, lat_c: int = vae_lat_c, lat_h: int = vae_lat_h, lat_w: int = vae_lat_w):
+            super().__init__()
+            # Load pretrained VAE (frozen)
+            self.vae = AutoencoderKL.from_pretrained(name)
+            for p in self.vae.parameters():
+                p.requires_grad = False
+            self.vae.eval()
+            # determine scaling factor used by the VAE (Stable Diffusion convention)
+            self.scale = getattr(self.vae.config, "scaling_factor", getattr(self.vae.config, "scale_factor", 0.18215))
+            self.lat_c = lat_c
+            self.lat_h = lat_h
+            self.lat_w = lat_w
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+             """x: (B, lat_c*lat_h*lat_w) or (B, C, H, W) -> returns (B,3,H*8,W*8) image in [0,1]"""
+             B = x.size(0)
+             # If flattened vector, reshape; otherwise accept (B,C,H,W)
+             if x.dim() == 2:
+                 lat = x.view(B, self.lat_c, self.lat_h, self.lat_w)
+             elif x.dim() == 4:
+                 lat = x
+             else:
+                 raise ValueError(f"Unexpected VAE input shape: {x.shape}")
+             # Scale and decode
+             lat_scaled = lat / self.scale
+             imgs = self.vae.decode(lat_scaled).sample  # (B,3,H*8,W*8) in [-1,1]
+             imgs = (imgs.clamp(-1, 1) + 1.0) / 2.0
+             return imgs
+
+    # Down adapter should produce flattened VAE latents: d_out = C*H*W
+    image_down = DownAdapter(d_shared=d_shared, d_out=(vae_lat_c * vae_lat_h * vae_lat_w))
+    image_dec = VAEImageDecoder(name=vae_name, lat_c=vae_lat_c, lat_h=vae_lat_h, lat_w=vae_lat_w)
+
     text_iface = ModalityInterface(
         name="text",
         encoder=text_enc,
         up_adapter=text_up,
-        decoder=None,
-        down_adapter=None,
+        decoder=text_dec,
+        down_adapter=text_down,
         freeze_encoder=freeze_text,
-        freeze_decoder=True,
+        freeze_decoder=False,
     )
     image_iface = ModalityInterface(
         name="image",
         encoder=img_enc,
         up_adapter=img_up,
-        decoder=None,
-        down_adapter=None,
+        decoder=image_dec,
+        down_adapter=image_down,
         freeze_encoder=freeze_image,
+        # Freeze the pretrained VAE decoder; we only train the down-adapter to map into VAE latents
         freeze_decoder=True,
     )
     audio_iface = ModalityInterface(
@@ -319,11 +368,35 @@ def build_brain(
     return brain.to(device)
 
 
+# Simple text decoder that maps shared latent -> token logits -> text strings
+class TextDecoder(nn.Module):
+    def __init__(self, d_in: int, tokenizer_name: str = "intfloat/e5-small-v2"):
+        super().__init__()
+        # tokenizer is used at decode time (CPU-friendly)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        self.vocab_size = self.tokenizer.vocab_size
+        # simple linear head from shared dim to vocab logits
+        self.head = nn.Linear(d_in, self.vocab_size)
+
+    def forward(self, x: torch.Tensor):
+        """x: (B, d_in) -> returns list[str] (decoded strings)
+        Note: returning Python strings from a Module is fine for inference but
+        not JIT/traceable; this decoder is meant for convenience during eval.
+        """
+        logits = self.head(x)  # (B, vocab)
+        toks = logits.argmax(dim=-1).cpu().tolist()
+        # tokenizer.decode expects a sequence of token ids; if tokens are ints
+        # we wrap them in a list to decode each sample separately.
+        texts = [self.tokenizer.decode([t], skip_special_tokens=True).strip() for t in toks]
+        return texts
+
+
 __all__ = [
     "AudioCNNEncoder",
     "CLIPVisionEncoderWrapper",
     "E5TextEncoderWrapper",
     "Preproc",
     "PreprocConfig",
+    "TextDecoder",
     "build_brain",
 ]

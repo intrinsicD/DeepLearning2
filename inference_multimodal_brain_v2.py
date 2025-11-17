@@ -3,14 +3,82 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
+import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 
 from brain_v2_components import Preproc, build_brain
 from multimodal_brain_v2 import ThinkControl
+
+
+def _save_image_array(arr: np.ndarray, out_path: str):
+    # arr expected in (C,H,W) or (H,W,C) or (H,W). Normalize to [0,255] uint8
+    if arr.dtype != np.uint8:
+        mn, mx = float(np.nanmin(arr)), float(np.nanmax(arr))
+        if np.isfinite(mn) and np.isfinite(mx) and mx - mn > 1e-6:
+            arr = (arr - mn) / (mx - mn)
+        else:
+            arr = np.zeros_like(arr)
+        arr = (arr * 255.0).clip(0, 255).astype(np.uint8)
+
+    # Convert channel-first to HWC
+    if arr.ndim == 3 and arr.shape[0] in (1, 3):
+        arr = np.transpose(arr, (1, 2, 0))
+
+    if arr.ndim == 2:
+        img = Image.fromarray(arr).convert("L")
+    else:
+        # If single channel last dim, convert accordingly
+        if arr.shape[2] == 1:
+            img = Image.fromarray(arr.squeeze(2).astype(np.uint8)).convert("L")
+        else:
+            img = Image.fromarray(arr.astype(np.uint8))
+    img.save(out_path)
+
+
+def _maybe_save_decoded_images(decoded: Dict[str, Any], out_dir: str):
+    os.makedirs(out_dir, exist_ok=True)
+    saved = []
+    for name, val in decoded.items():
+        # Only handle image-like outputs
+        if name.lower() not in ("image", "images"):
+            continue
+
+        # val can be: torch.Tensor, list (nested), numpy array, or list[str]
+        try:
+            import torch
+        except Exception:
+            torch = None
+
+        if torch is not None and isinstance(val, torch.Tensor):
+            arr = val.detach().cpu().numpy()
+        else:
+            # try convert nested lists to array
+            try:
+                arr = np.array(val)
+            except Exception:
+                print(f"Skipping saving decoded '{name}': unsupported type {type(val)}")
+                continue
+
+        # Normalize shapes: expect (B,C,H,W) or (C,H,W) or (H,W,C) or (H,W)
+        if arr.ndim == 4:
+            B = arr.shape[0]
+            for i in range(B):
+                out_path = os.path.join(out_dir, f"{name}_{i}.png")
+                _save_image_array(arr[i], out_path)
+                saved.append(out_path)
+        else:
+            out_path = os.path.join(out_dir, f"{name}.png")
+            _save_image_array(arr, out_path)
+            saved.append(out_path)
+
+    if saved:
+        print(f"Saved decoded images: {saved}")
 
 
 def _get_device(device_arg: Optional[str]) -> torch.device:
@@ -165,6 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--include-tokens", action="store_true", help="Include intermediate tokens in JSON output")
     p.add_argument("--include-latents", action="store_true", help="Include latent tensors in JSON output")
     p.add_argument("--save-json", type=str, default=None, help="Optional path to save JSON results")
+    p.add_argument("--save-images", type=str, default=None, help="Optional directory to save decoded images (PNG)")
     return p
 
 
@@ -173,6 +242,10 @@ def main(argv: Optional[Iterable[str]] = None):
     args = parser.parse_args(argv)
     result = run_inference(args)
     print(json.dumps(result, indent=2))
+
+    # If requested, save decoded images from the result
+    if args.save_images and result.get("decoded"):
+        _maybe_save_decoded_images(result["decoded"], args.save_images)
 
 
 if __name__ == "__main__":

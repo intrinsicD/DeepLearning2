@@ -22,6 +22,7 @@ from typing import Dict, Optional, Tuple, List, Any, Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import warnings
 
 
 # ------------------------------------------------------------
@@ -197,9 +198,28 @@ class ModalityInterface(nn.Module):
         z_shared: (B, d_shared) vector from thinking core, e.g. [S] token.
         Returns whatever the decoder emits (text, image tensor, audio waveform, etc.).
         """
-        if self.decoder is None or self.down is None:
-            raise RuntimeError(f"Modality '{self.name}' has no decoder/down_adapter configured.")
+        # If the down-adapter is missing, we can't map the shared latent to the decoder
+        # space — return the shared latent directly so callers can still inspect it.
+        if self.down is None:
+            warnings.warn(
+                f"Modality '{self.name}' has no down_adapter configured; returning shared latent tensor instead of decoded output.",
+                UserWarning,
+            )
+            return z_shared
+
+        # Map to the decoder's native space
         h_dec = self.down(z_shared)
+
+        # If there's no actual decoder attached, return the down-adapter output
+        # (decoder-space representation) so that inference can still proceed and
+        # callers can inspect/serialize the result.
+        if self.decoder is None:
+            warnings.warn(
+                f"Modality '{self.name}' has no decoder attached; returning down_adapter output tensor.",
+                UserWarning,
+            )
+            return h_dec
+
         return self.decoder(h_dec)
 
 
