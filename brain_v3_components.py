@@ -26,7 +26,6 @@ from PIL import Image
 
 from transformers import AutoModel, AutoTokenizer, CLIPImageProcessor, CLIPModel
 
-
 # ============================================================================
 # Import Brain V3 components
 # ============================================================================
@@ -63,10 +62,10 @@ class E5TextEncoderWrapper(nn.Module):
     }
 
     def __init__(
-        self,
-        size: str = "small",
-        freeze: bool = True,
-        gradient_checkpointing: bool = False,
+            self,
+            size: str = "small",
+            freeze: bool = True,
+            gradient_checkpointing: bool = False,
     ):
         super().__init__()
         model_name, self.output_dim = self.MODELS[size]
@@ -110,10 +109,10 @@ class CLIPVisionEncoderWrapper(nn.Module):
     }
 
     def __init__(
-        self,
-        size: str = "base32",
-        freeze: bool = True,
-        gradient_checkpointing: bool = False,
+            self,
+            size: str = "base32",
+            freeze: bool = True,
+            gradient_checkpointing: bool = False,
     ):
         super().__init__()
         model_name, self.output_dim = self.MODELS[size]
@@ -151,10 +150,10 @@ class AudioCNNEncoder(nn.Module):
     """
 
     def __init__(
-        self,
-        n_mels: int = 80,
-        output_dim: int = 384,
-        hidden_channels: List[int] = [32, 64, 128],
+            self,
+            n_mels: int = 80,
+            output_dim: int = 384,
+            hidden_channels: List[int] = [32, 64, 128],
     ):
         super().__init__()
         self.n_mels = n_mels
@@ -184,7 +183,8 @@ class AudioCNNEncoder(nn.Module):
     def forward(self, inputs: Union[torch.Tensor, Dict[str, torch.Tensor]]) -> torch.Tensor:
         """
         Args:
-            inputs: Tensor (batch, n_mels, time) or Dict with "mel" key
+                        inputs: Tensor or Dict with "mel" key
+                   Shapes: (batch, n_mels, time), (batch, 1, n_mels, time)
 
         Returns:
             (batch, output_dim)
@@ -194,9 +194,15 @@ class AudioCNNEncoder(nn.Module):
         else:
             x = inputs
 
-        # Add channel dim if needed
+        # Handle different input shapes
         if x.dim() == 3:
+            # (batch, n_mels, time) - add channel dim
             x = x.unsqueeze(1)
+        elif x.dim() == 4:
+            # (batch, 1, n_mels, time) - already correct
+            pass
+        else:
+            raise ValueError(f"AudioCNNEncoder expects 3D or 4D input, got {x.dim()}D: {x.shape}")
 
         # CNN forward
         h = self.conv(x)
@@ -217,13 +223,13 @@ class AudioTransformerEncoder(nn.Module):
     """
 
     def __init__(
-        self,
-        n_mels: int = 80,
-        output_dim: int = 384,
-        patch_size: int = 16,
-        n_layers: int = 4,
-        n_heads: int = 6,
-        max_length: int = 512,
+            self,
+            n_mels: int = 80,
+            output_dim: int = 384,
+            patch_size: int = 16,
+            n_layers: int = 4,
+            n_heads: int = 6,
+            max_length: int = 512,
     ):
         super().__init__()
         self.n_mels = n_mels
@@ -306,9 +312,9 @@ class TextDecoder(nn.Module):
     """
 
     def __init__(
-        self,
-        d_in: int,
-        tokenizer_name: str = "intfloat/e5-small-v2",
+            self,
+            d_in: int,
+            tokenizer_name: str = "intfloat/e5-small-v2",
     ):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
@@ -346,11 +352,11 @@ class VAEImageDecoder(nn.Module):
     """
 
     def __init__(
-        self,
-        d_in: int,
-        vae_name: str = "stabilityai/sd-vae-ft-mse",
-        latent_channels: int = 4,
-        latent_size: int = 32,
+            self,
+            d_in: int,
+            vae_name: str = "stabilityai/sd-vae-ft-mse",
+            latent_channels: int = 4,
+            latent_size: int = 32,
     ):
         super().__init__()
         from diffusers import AutoencoderKL
@@ -453,9 +459,9 @@ class Preproc:
         )
 
     def tokenize_text(
-        self,
-        texts: List[str],
-        device: Optional[torch.device] = None,
+            self,
+            texts: List[str],
+            device: Optional[torch.device] = None,
     ) -> Dict[str, torch.Tensor]:
         """Tokenize text for E5 encoder."""
         tokens = self.txt_tokenizer(
@@ -472,9 +478,9 @@ class Preproc:
         return tokens
 
     def process_images(
-        self,
-        images: torch.Tensor,
-        device: Optional[torch.device] = None,
+            self,
+            images: torch.Tensor,
+            device: Optional[torch.device] = None,
     ) -> Dict[str, torch.Tensor]:
         """Process images for CLIP encoder."""
         # Denormalize if needed (assuming ImageNet normalization)
@@ -484,7 +490,14 @@ class Preproc:
             images = torch.clamp(images * std + mean, 0, 1)
 
         # Process through CLIP processor
-        px = self.clip_processor(images=images, return_tensors="pt")
+        # Convert to list of numpy arrays for CLIP processor
+        # CLIP processor expects (H, W, C) format in range [0, 255] or [0, 1]
+        images_np = images.cpu().numpy()
+        # Convert from (B, C, H, W) to list of (H, W, C)
+        images_list = [img.transpose(1, 2, 0) for img in images_np]
+
+        # Process through CLIP processor
+        px = self.clip_processor(images=images_list, return_tensors="pt")
 
         if device is not None:
             px = {k: v.to(device) for k, v in px.items()}
@@ -492,27 +505,75 @@ class Preproc:
         return px
 
     def process_audio(
-        self,
-        audio: torch.Tensor,
-        device: Optional[torch.device] = None,
+            self,
+            audio: torch.Tensor,
+            device: Optional[torch.device] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Compute mel-spectrogram from audio."""
+        """
+        Process audio input to mel-spectrogram format.
+
+        Handles multiple input formats:
+        - Raw waveform: (batch, samples) or (batch, 1, samples)
+        - Pre-computed mel: (batch, n_mels, time) or (batch, 1, n_mels, time)
+        """
         # Ensure float
         audio = audio.float()
 
-        # Compute mel-spectrogram
-        if audio.dim() == 2:
-            # (batch, samples)
-            mel = self.mel_transform(audio)
-        elif audio.dim() == 3:
-            # (batch, channels, samples) - use first channel
-            mel = self.mel_transform(audio[:, 0])
-        else:
-            raise ValueError(f"Unexpected audio shape: {audio.shape}")
+        # Detect if input is already a mel-spectrogram
+        # Mel spectrograms have shape (batch, [1,] n_mels, time) where n_mels is typically 80
+        # Raw audio has shape (batch, samples) or (batch, 1, samples) where samples >> n_mels
 
-        # Log mel and normalize
-        mel = torch.log(mel + 1e-9)
-        mel = (mel - mel.mean(dim=-1, keepdim=True)) / (mel.std(dim=-1, keepdim=True) + 1e-9)
+        is_mel_spectrogram = False
+
+        if audio.dim() == 4:
+            # (batch, 1, n_mels, time) - definitely a mel-spectrogram with channel dim
+            is_mel_spectrogram = True
+            mel = audio  # Keep as-is, already in correct format
+        elif audio.dim() == 3:
+            # Could be (batch, 1, samples) raw audio OR (batch, n_mels, time) mel
+            # Heuristic: if dim 1 == n_mels (80), it's likely a mel
+            if audio.shape[1] == self.cfg.n_mels:
+                # (batch, n_mels, time) - mel without channel dim
+                is_mel_spectrogram = True
+                mel = audio.unsqueeze(1)  # Add channel dim -> (batch, 1, n_mels, time)
+            elif audio.shape[1] == 1:
+                # Check if it looks like (batch, 1, n_mels, time) squeezed wrong
+                # or (batch, 1, samples) raw audio
+                if audio.shape[2] == self.cfg.n_mels:
+                    # Likely transposed mel
+                    is_mel_spectrogram = True
+                    mel = audio.unsqueeze(1)
+                else:
+                    # (batch, 1, samples) - raw audio with channel dim
+                    is_mel_spectrogram = False
+        elif audio.dim() == 2:
+            # (batch, samples) - raw audio
+            is_mel_spectrogram = False
+
+        if is_mel_spectrogram:
+            # Input is already a mel-spectrogram
+            # Ensure shape is (batch, 1, n_mels, time)
+            if mel.dim() == 3:
+                mel = mel.unsqueeze(1)
+
+            # The dataset may have already normalized, but let's ensure consistency
+            # Only normalize if values seem unnormalized (large range)
+            if mel.abs().max() > 20:  # Likely unnormalized log-mel
+                mel = (mel - mel.mean(dim=-1, keepdim=True)) / (mel.std(dim=-1, keepdim=True) + 1e-9)
+        else:
+            # Need to compute mel-spectrogram from raw audio
+            if audio.dim() == 3:
+                # (batch, channels, samples) - use first channel
+                audio = audio[:, 0]
+            # audio is now (batch, samples)
+            mel = self.mel_transform(audio)  # (batch, n_mels, time)
+
+            # Log mel and normalize
+            mel = torch.log(mel + 1e-9)
+            mel = (mel - mel.mean(dim=-1, keepdim=True)) / (mel.std(dim=-1, keepdim=True) + 1e-9)
+
+            # Add channel dim
+            mel = mel.unsqueeze(1)  # (batch, 1, n_mels, time)
 
         out = {"mel": mel}
 
@@ -522,9 +583,9 @@ class Preproc:
         return out
 
     def convert_batch(
-        self,
-        batch: Dict[str, Any],
-        device: Optional[torch.device] = None,
+            self,
+            batch: Dict[str, Any],
+            device: Optional[torch.device] = None,
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
         Convert a batch dict to model inputs.
@@ -553,11 +614,11 @@ class Preproc:
         return out
 
     def prepare_inference_inputs(
-        self,
-        texts: Optional[List[str]] = None,
-        image_paths: Optional[List[str]] = None,
-        audio_paths: Optional[List[str]] = None,
-        device: Optional[torch.device] = None,
+            self,
+            texts: Optional[List[str]] = None,
+            image_paths: Optional[List[str]] = None,
+            audio_paths: Optional[List[str]] = None,
+            device: Optional[torch.device] = None,
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
         Prepare inputs for inference from file paths or raw text.
@@ -631,14 +692,14 @@ class Preproc:
 # ============================================================================
 
 def build_brain_v3(
-    size: Union[ModelSize, str] = "small",
-    device: torch.device = None,
-    freeze_text: bool = True,
-    freeze_image: bool = True,
-    train_audio: bool = True,
-    use_image_decoder: bool = False,
-    use_text_decoder: bool = False,
-    config_overrides: Optional[Dict[str, Any]] = None,
+        size: Union[ModelSize, str] = "small",
+        device: torch.device = None,
+        freeze_text: bool = True,
+        freeze_image: bool = True,
+        train_audio: bool = True,
+        use_image_decoder: bool = False,
+        use_text_decoder: bool = False,
+        config_overrides: Optional[Dict[str, Any]] = None,
 ) -> MultimodalBrainV3:
     """
     Factory function to build a complete MultimodalBrainV3.

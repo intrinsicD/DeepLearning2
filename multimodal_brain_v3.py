@@ -1233,13 +1233,16 @@ class ThinkingCoreV3(nn.Module):
             # Weighted aggregate of modalities
             weights = []
             latents = []
+            first_z = next(iter(z_by_mod.values()))
+            dtype = first_z.dtype
+
             for name, z in z_by_mod.items():
                 w = modality_weights.get(name, 1.0)
                 weights.append(w)
                 latents.append(self.input_proj(z.unsqueeze(1)))
 
             stacked = torch.cat(latents, dim=1)  # (batch, n_mod, d_model)
-            w_tensor = torch.tensor(weights, device=device).view(1, -1, 1)
+            w_tensor = torch.tensor(weights, device=device, dtype=dtype).view(1, -1, 1)
             w_tensor = w_tensor / (w_tensor.sum() + 1e-8)
             agg = (stacked * w_tensor).sum(dim=1, keepdim=True)
             g_token = g_token + agg
@@ -1263,7 +1266,7 @@ class ThinkingCoreV3(nn.Module):
             _, x = self.memory(x)
 
         # Run thinking steps
-        total_aux_loss = 0.0
+        total_aux_loss = torch.tensor(0.0, device=device, dtype=x.dtype)
 
         for step in range(n_steps):
             for layer in self.layers:
@@ -1299,7 +1302,10 @@ class ThinkingCoreV3(nn.Module):
 
     def get_aux_loss(self) -> torch.Tensor:
         """Get accumulated MoE auxiliary loss."""
-        return getattr(self, '_aux_loss', torch.tensor(0.0))
+        aux = getattr(self, '_aux_loss', None)
+        if aux is None:
+            return torch.tensor(0.0)
+        return aux
 
 
 # ============================================================================
