@@ -184,7 +184,8 @@ class AudioCNNEncoder(nn.Module):
     def forward(self, inputs: Union[torch.Tensor, Dict[str, torch.Tensor]]) -> torch.Tensor:
         """
         Args:
-            inputs: Tensor (batch, n_mels, time) or Dict with "mel" key
+            inputs: Tensor or Dict with "mel" key
+                   Shapes: (batch, n_mels, time), (batch, 1, n_mels, time)
 
         Returns:
             (batch, output_dim)
@@ -194,9 +195,15 @@ class AudioCNNEncoder(nn.Module):
         else:
             x = inputs
 
-        # Add channel dim if needed
+        # Handle different input shapes
         if x.dim() == 3:
+            # (batch, n_mels, time) - add channel dim
             x = x.unsqueeze(1)
+        elif x.dim() == 4:
+            # (batch, 1, n_mels, time) - already correct
+            pass
+        else:
+            raise ValueError(f"AudioCNNEncoder expects 3D or 4D input, got {x.dim()}D: {x.shape}")
 
         # CNN forward
         h = self.conv(x)
@@ -483,8 +490,14 @@ class Preproc:
             std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(images.device)
             images = torch.clamp(images * std + mean, 0, 1)
 
+        # Convert to list of numpy arrays for CLIP processor
+        # CLIP processor expects (H, W, C) format in range [0, 255] or [0, 1]
+        images_np = images.cpu().numpy()
+        # Convert from (B, C, H, W) to list of (H, W, C)
+        images_list = [img.transpose(1, 2, 0) for img in images_np]
+
         # Process through CLIP processor
-        px = self.clip_processor(images=images, return_tensors="pt")
+        px = self.clip_processor(images=images_list, return_tensors="pt")
 
         if device is not None:
             px = {k: v.to(device) for k, v in px.items()}
@@ -496,23 +509,71 @@ class Preproc:
         audio: torch.Tensor,
         device: Optional[torch.device] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Compute mel-spectrogram from audio."""
+        """
+        Process audio input to mel-spectrogram format.
+
+        Handles multiple input formats:
+        - Raw waveform: (batch, samples) or (batch, 1, samples)
+        - Pre-computed mel: (batch, n_mels, time) or (batch, 1, n_mels, time)
+        """
         # Ensure float
         audio = audio.float()
 
-        # Compute mel-spectrogram
-        if audio.dim() == 2:
-            # (batch, samples)
-            mel = self.mel_transform(audio)
-        elif audio.dim() == 3:
-            # (batch, channels, samples) - use first channel
-            mel = self.mel_transform(audio[:, 0])
-        else:
-            raise ValueError(f"Unexpected audio shape: {audio.shape}")
+        # Detect if input is already a mel-spectrogram
+        # Mel spectrograms have shape (batch, [1,] n_mels, time) where n_mels is typically 80
+        # Raw audio has shape (batch, samples) or (batch, 1, samples) where samples >> n_mels
 
-        # Log mel and normalize
-        mel = torch.log(mel + 1e-9)
-        mel = (mel - mel.mean(dim=-1, keepdim=True)) / (mel.std(dim=-1, keepdim=True) + 1e-9)
+        is_mel_spectrogram = False
+
+        if audio.dim() == 4:
+            # (batch, 1, n_mels, time) - definitely a mel-spectrogram with channel dim
+            is_mel_spectrogram = True
+            mel = audio  # Keep as-is, already in correct format
+        elif audio.dim() == 3:
+            # Could be (batch, 1, samples) raw audio OR (batch, n_mels, time) mel
+            # Heuristic: if dim 1 == n_mels (80), it's likely a mel
+            if audio.shape[1] == self.cfg.n_mels:
+                # (batch, n_mels, time) - mel without channel dim
+                is_mel_spectrogram = True
+                mel = audio.unsqueeze(1)  # Add channel dim -> (batch, 1, n_mels, time)
+            elif audio.shape[1] == 1:
+                # Check if it looks like (batch, 1, n_mels, time) squeezed wrong
+                # or (batch, 1, samples) raw audio
+                if audio.shape[2] == self.cfg.n_mels:
+                    # Likely transposed mel
+                    is_mel_spectrogram = True
+                    mel = audio.unsqueeze(1)
+                else:
+                    # (batch, 1, samples) - raw audio with channel dim
+                    is_mel_spectrogram = False
+        elif audio.dim() == 2:
+            # (batch, samples) - raw audio
+            is_mel_spectrogram = False
+
+        if is_mel_spectrogram:
+            # Input is already a mel-spectrogram
+            # Ensure shape is (batch, 1, n_mels, time)
+            if mel.dim() == 3:
+                mel = mel.unsqueeze(1)
+
+            # The dataset may have already normalized, but let's ensure consistency
+            # Only normalize if values seem unnormalized (large range)
+            if mel.abs().max() > 20:  # Likely unnormalized log-mel
+                mel = (mel - mel.mean(dim=-1, keepdim=True)) / (mel.std(dim=-1, keepdim=True) + 1e-9)
+        else:
+            # Need to compute mel-spectrogram from raw audio
+            if audio.dim() == 3:
+                # (batch, channels, samples) - use first channel
+                audio = audio[:, 0]
+            # audio is now (batch, samples)
+            mel = self.mel_transform(audio)  # (batch, n_mels, time)
+
+            # Log mel and normalize
+            mel = torch.log(mel + 1e-9)
+            mel = (mel - mel.mean(dim=-1, keepdim=True)) / (mel.std(dim=-1, keepdim=True) + 1e-9)
+
+            # Add channel dim
+            mel = mel.unsqueeze(1)  # (batch, 1, n_mels, time)
 
         out = {"mel": mel}
 
