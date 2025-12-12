@@ -81,10 +81,12 @@ class TrainConfig:
         # Loss
         temperature: float = 0.07,
         moe_aux_weight: float = 0.01,
+        latent_l2_weight: float = 0.0,
 
         # Precision
         precision: str = "fp16",
         grad_clip: float = 1.0,
+        nan_guard: bool = True,
 
         # Checkpointing
         save_dir: str = "checkpoints_v3",
@@ -169,11 +171,15 @@ def parse_args() -> TrainConfig:
     # Loss
     parser.add_argument("--temperature", type=float, default=0.07)
     parser.add_argument("--moe_aux_weight", type=float, default=0.01)
+    parser.add_argument("--latent_l2_weight", type=float, default=0.0,
+                        help="L2 regularization on modality latents")
 
     # Precision
     parser.add_argument("--precision", type=str, default="fp16",
                        choices=["fp32", "fp16", "bf16"])
     parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument("--nan_guard", action="store_true",
+                        help="Skip optimizer steps when loss/gradients are non-finite")
 
     # Checkpointing
     parser.add_argument("--save_dir", type=str, default="checkpoints_v3")
@@ -209,8 +215,10 @@ def parse_args() -> TrainConfig:
         warmup_ratio=args.warmup_ratio,
         temperature=args.temperature,
         moe_aux_weight=args.moe_aux_weight,
+        latent_l2_weight=args.latent_l2_weight,
         precision=args.precision,
         grad_clip=args.grad_clip,
+        nan_guard=args.nan_guard,
         save_dir=args.save_dir,
         log_dir=args.log_dir,
         log_interval=args.log_interval,
@@ -282,6 +290,11 @@ def format_time(seconds: float) -> str:
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def is_finite_tensor(x: torch.Tensor) -> bool:
+    """Return True if all entries are finite."""
+    return torch.isfinite(x).all().item()
 
 
 # ============================================================================
@@ -545,6 +558,16 @@ class Trainer:
         inputs = self.preproc.convert_batch(batch, self.device)
         return inputs
 
+    def _grad_norm(self, module: nn.Module) -> Optional[float]:
+        """Compute total grad norm for a module if grads exist."""
+        grads = [p.grad.detach() for p in module.parameters() if p.requires_grad and p.grad is not None]
+        if not grads:
+            return None
+        flat = torch.cat([g.reshape(-1) for g in grads])
+        if not is_finite_tensor(flat):
+            return float("nan")
+        return flat.norm().item()
+
     def _compute_loss(
         self,
         z_by_mod: Dict[str, torch.Tensor],
@@ -578,6 +601,12 @@ class Trainer:
         if aux_loss is not None and self.model.config.use_moe:
             losses["moe_aux"] = aux_loss * self.cfg.moe_aux_weight
 
+        # Latent L2 regularization to avoid collapse/exploding norms
+        if self.cfg.latent_l2_weight > 0:
+            l2_terms = [z.pow(2).mean() for z in z_by_mod.values()]
+            l2_terms.append(z_global.pow(2).mean())
+            losses["latent_l2"] = self.cfg.latent_l2_weight * sum(l2_terms) / len(l2_terms)
+
         # Total
         losses["total"] = sum(losses.values())
 
@@ -598,15 +627,23 @@ class Trainer:
             # Forward pass with autocast
             with torch.amp.autocast(self.device.type, dtype=self.autocast_dtype):
                 # Encode and think
-                z_by_mod = self.model.encode_inputs(inputs)
-                _, z_global, _ = self.model.think(z_by_mod)
+                # Encode inputs and run the thinking core to get refined latents
+                z_by_mod_in = self.model.encode_inputs(inputs)
+                _, z_global, z_by_mod = self.model.think(z_by_mod_in)
 
                 # Get auxiliary loss
                 aux_loss = self.model.core.get_aux_loss()
 
-                # Compute losses
+                # Compute losses using the refined modality latents
                 losses = self._compute_loss(z_by_mod, z_global, aux_loss)
                 loss = losses["total"]
+
+            if self.cfg.nan_guard and not is_finite_tensor(loss.detach()):
+                print(f"  [warn] Non-finite loss at step {self.global_step}, skipping update")
+                self.writer.add_scalar("train/nonfinite_loss", 1, self.global_step)
+                self.optimizer.zero_grad(set_to_none=True)
+                self.scaler.update()
+                continue
 
             # Scale loss for accumulation
             accum_counter += 1
@@ -635,6 +672,14 @@ class Trainer:
             else:
                 grad_norm = 0.0
 
+            if self.cfg.nan_guard and isinstance(grad_norm, torch.Tensor) and not is_finite_tensor(grad_norm):
+                print(f"  [warn] Non-finite grad norm at step {self.global_step}, skipping step")
+                self.writer.add_scalar("train/nonfinite_grad", 1, self.global_step)
+                self.optimizer.zero_grad(set_to_none=True)
+                self.scaler.update()
+                accum_counter = 0
+                continue
+
             # Optimizer step
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -655,6 +700,15 @@ class Trainer:
                     self.writer.add_scalar(f"train/{name}", val.item(), self.global_step)
                 self.writer.add_scalar("train/lr", lr, self.global_step)
                 self.writer.add_scalar("train/grad_norm", float(grad_norm), self.global_step)
+
+                core_grad = self._grad_norm(self.model.core)
+                if core_grad is not None:
+                    self.writer.add_scalar("train/grad_norm_core", core_grad, self.global_step)
+
+                for mod_name, iface in self.model.modalities.items():
+                    mod_grad = self._grad_norm(iface)
+                    if mod_grad is not None:
+                        self.writer.add_scalar(f"train/grad_norm_{mod_name}", mod_grad, self.global_step)
 
                 # Log embedding stats
                 for mod, z in z_by_mod.items():
@@ -679,8 +733,8 @@ class Trainer:
             inputs = self._prepare_batch(batch)
 
             with torch.amp.autocast(self.device.type, dtype=self.autocast_dtype):
-                z_by_mod = self.model.encode_inputs(inputs)
-                _, z_global, _ = self.model.think(z_by_mod)
+                z_by_mod_in = self.model.encode_inputs(inputs)
+                _, z_global, z_by_mod = self.model.think(z_by_mod_in)
                 aux_loss = self.model.core.get_aux_loss()
                 losses = self._compute_loss(z_by_mod, z_global, aux_loss)
 
